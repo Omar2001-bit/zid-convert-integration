@@ -1,0 +1,107 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.zidOrderEventsWebhookController = void 0;
+// DEFINITIVE FIX: Import the new service function and interfaces
+const convert_service_1 = require("../../services/convert-service");
+const currency_service_1 = require("../../services/currency-service");
+const convertContextController_1 = require("../api/convertContextController");
+const TARGET_REPORTING_CURRENCY = 'SAR';
+const zidOrderEventsWebhookController = async (req, res) => {
+    var _a, _b, _c;
+    const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
+    const providedToken = req.query.token;
+    if (!secretToken || providedToken !== secretToken) {
+        console.warn('[SECURITY] Webhook request rejected. Invalid or missing token.');
+        return res.status(403).send("Forbidden: Invalid token.");
+    }
+    res.status(200).json({ message: "Webhook received and validated. Processing in background." });
+    try {
+        let zidOrder;
+        if (typeof req.body === 'string') {
+            zidOrder = JSON.parse(req.body);
+        }
+        else {
+            zidOrder = req.body;
+        }
+        const eventType = 'order.create';
+        console.log(`[SUCCESS] Webhook request validated for event: ${eventType}`);
+        if (!zidOrder || !zidOrder.id) {
+            console.error("Webhook payload did not contain a valid order ID. Body:", zidOrder);
+            return;
+        }
+        const convertAccountId = process.env.CONVERT_ACCOUNT_ID;
+        const convertProjectId = process.env.CONVERT_PROJECT_ID;
+        const convertGoalId = parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE, 10);
+        const orderLogPrefix = `[ZidOrder ${zidOrder.id}, Cust ${((_a = zidOrder.customer) === null || _a === void 0 ? void 0 : _a.id) || 'N/A'}]`;
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
+        const zidCustomerId = (_c = (_b = zidOrder.customer) === null || _b === void 0 ? void 0 : _b.id) === null || _c === void 0 ? void 0 : _c.toString();
+        if (!zidCustomerId) {
+            console.warn(`${orderLogPrefix} [WEBHOOK] Zid Customer ID missing. Skipping Convert events.`);
+            return;
+        }
+        const storedContext = (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
+        const visitorIdForConvert = (storedContext === null || storedContext === void 0 ? void 0 : storedContext.convertVisitorId) || zidCustomerId;
+        console.log(`${orderLogPrefix} Using VID for Convert payload: '${visitorIdForConvert}' (Source: ${storedContext ? 'Stored Context' : 'Fallback to Zid ID'})`);
+        const eventsForConvert = [];
+        // 1. Add a 'bucketing' event for each experiment the user was in.
+        if (storedContext && storedContext.convertBucketing.length > 0) {
+            console.log(`${orderLogPrefix} Context FOUND. Adding bucketing events.`);
+            storedContext.convertBucketing.forEach(bucket => {
+                eventsForConvert.push({
+                    eventType: 'bucketing',
+                    data: {
+                        experienceId: bucket.experimentId,
+                        variationId: bucket.variationId
+                    }
+                });
+            });
+        }
+        else {
+            console.log(`${orderLogPrefix} Context NOT found. Conversion will be unattributed.`);
+        }
+        // 2. Build the detailed products array for the conversion event.
+        const finalOrderTotal = parseFloat(zidOrder.order_total || "0");
+        const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY;
+        const revenueForConvertAPI = await currency_service_1.CurrencyService.convertToSAR(finalOrderTotal, originalCurrencyCode);
+        let productsForPayload = [];
+        if (zidOrder.products && Array.isArray(zidOrder.products)) {
+            productsForPayload = await Promise.all(zidOrder.products.map(async (product) => {
+                const itemPrice = parseFloat(String(product.price)) || 0;
+                const convertedItemPrice = await currency_service_1.CurrencyService.convertToSAR(itemPrice, originalCurrencyCode);
+                return {
+                    productId: product.sku || String(product.id),
+                    productName: product.name,
+                    unitPrice: convertedItemPrice,
+                    quantity: parseInt(String(product.quantity), 10) || 0
+                };
+            }));
+        }
+        // 3. Add the single 'conversion' event to the array.
+        // ===================================================================================
+        // === DEFINITIVE FIX: Add the goalId inside the 'data' object =======================
+        // ===================================================================================
+        eventsForConvert.push({
+            eventType: 'conversion',
+            data: {
+                goalId: convertGoalId,
+                transactionId: `zid-order-${zidOrder.id}`,
+                revenue: revenueForConvertAPI,
+                products: productsForPayload
+            }
+        });
+        // ===================================================================================
+        // 4. Construct the final visitor object.
+        const visitorPayload = {
+            visitorId: visitorIdForConvert,
+            events: eventsForConvert
+        };
+        // 5. Send the entire batch of events to the new service.
+        await convert_service_1.ConvertApiService.sendServingApiEvents(convertAccountId, convertProjectId, visitorPayload);
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished API calls to Convert ---`);
+    }
+    catch (error) {
+        const err = error;
+        console.error("[ERROR] Webhook processing failed after acknowledgement:", err.message, err.stack);
+    }
+};
+exports.zidOrderEventsWebhookController = zidOrderEventsWebhookController;

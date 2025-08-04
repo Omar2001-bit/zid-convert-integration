@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zid-Convert Integration Setup</title>
+    <style>
+        body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f4f4f9; }
+        .container { text-align: center; padding: 40px; background-color: white; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        p { color: #666; }
+        .button { display: inline-block; padding: 15px 30px; font-size: 16px; color: white; background-color: #007bff; border-radius: 5px; text-decoration: none; font-weight: bold; }
+        .button:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Zid-Convert Integration</h1>
+        <p>Click the button below to authorize the application with your Zid store.</p>
+        <br>
+        <!-- This link points to the backend route that starts the OAuth flow -->
+        <a href="/zid/auth" class="button">Connect to Zid</a>
+    </div>
+</body>
+</html>
