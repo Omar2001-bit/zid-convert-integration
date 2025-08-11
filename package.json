@@ -6,6 +6,7 @@
   "scripts": {
     "clean": "npx rimraf ./dist",
     "build": "npm run clean && npx tsc -p tsconfig.json",
+    "build:vercel": "rm -rf ./dist && npx tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "dev": "nodemon --watch src --exec ts-node src/server.ts",
     "watch-ts": "tsc --watch",
