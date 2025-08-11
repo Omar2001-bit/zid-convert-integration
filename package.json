@@ -4,7 +4,7 @@
   "license": "ISC",
   "main": "dist/server.js",
   "scripts": {
-    "clean": "rimraf ./dist",
+    "clean": "npx rimraf ./dist",
     "build": "npm run clean && tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "dev": "nodemon --watch src --exec ts-node src/server.ts",
