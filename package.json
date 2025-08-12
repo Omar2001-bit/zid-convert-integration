@@ -4,12 +4,11 @@
   "license": "ISC",
   "main": "dist/server.js",
   "scripts": {
-    "build": "npx rimraf ./dist && npx tsc -p tsconfig.json",
+    "build": "npx tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "dev": "nodemon --watch src --exec ts-node src/server.ts",
     "watch-ts": "tsc --watch",
-    "start:original-js": "node server.js",
-    "postinstall": "npm run build"
+    "start:original-js": "node server.js"
   },
   "dependencies": {
     "@convertcom/js-sdk": "^4.3.2",
