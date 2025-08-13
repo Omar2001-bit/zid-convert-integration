@@ -1,16 +1,16 @@
 // src/controllers/zid/auth/callback.ts
 import { Request, Response } from 'express';
 import { ZidApiService } from '../../../services/zid-service';
-import { ConvertApiService, ConvertTrackPayload } from '../../../services/convert-service'; // Ensured ConvertTrackPayload is imported
-import { getStoredClientContext, StoredBucketingInfo } from '../../api/convertContextController'; // Assuming StoredBucketingInfo is exported from here
-import { CurrencyService } from '../../../services/currency-service';     // For currency conversion
+import { ConvertApiService, ConvertTrackPayload } from '../../../services/convert-service';
+import { getStoredClientContext, StoredBucketingInfo } from '../../api/convertContextController';
+import { CurrencyService } from '../../../services/currency-service';
 
 interface BucketingEntry {
     experienceId?: string;
     variationId?: string;
 }
 
-const TARGET_REPORTING_CURRENCY = 'SAR'; // Define your target currency
+const TARGET_REPORTING_CURRENCY = 'SAR';
 
 export const zidAuthCallbackController = async (req: Request, res: Response) => {
     const code = req.query.code as string;
@@ -33,21 +33,15 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
         const authorizationJwt = tokens.authorization;
         console.log("ZidAuthCallback: Tokens obtained successfully.");
 
-        // Zid Webhook Subscription Creation
         try {
             if (!process.env.MY_BACKEND_URL) {
                 console.error("ZidAuthCallback: MY_BACKEND_URL not set in .env. Cannot create Zid webhook.");
             } else {
-                // ==========================================================================================
-                // === THIS IS THE ONLY MODIFIED BLOCK ======================================================
-                // ==========================================================================================
                 const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
                 
-                // ADDED: New check to ensure the secret token exists before proceeding.
                 if (!secretToken) {
                     console.error("ZidAuthCallback: ZID_WEBHOOK_SECRET_TOKEN is not set in .env. Cannot create secure webhook. Please configure it.");
                 } else {
-                    // MODIFIED: Appended the secret token as a query parameter to the URL.
                     const webhookTargetUrl = `${process.env.MY_BACKEND_URL}/webhooks/zid/order-events?token=${secretToken}`;
                     
                     const webhookPayload = {
@@ -57,23 +51,18 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                         subscriber: "Zid-Convert Integration App"
                     };
 
-                    // MODIFIED: Log message to be more descriptive.
                     console.log(`ZidAuthCallback: Preparing to create/update SECURE Zid webhook for order.create to target: ${webhookTargetUrl}`);
                     await ZidApiService.createWebhookSubscription(xManagerToken, authorizationJwt, webhookPayload);
                 }
-                // ==========================================================================================
-                // === END OF MODIFIED BLOCK ================================================================
-                // ==========================================================================================
             }
         } catch (webhookError) {
             const err = webhookError as Error;
             console.error("ZidAuthCallback: Error during Zid webhook subscription:", err.message);
         }
 
-        // Fetching Zid Orders & Sending Events to Convert
         try {
             console.log("ZidAuthCallback: Attempting to fetch Zid orders...");
-            const ordersResponse = await ZidApiService.getOrders(xManagerToken, authorizationJwt, 1, 20); // Adjust pagination as needed
+            const ordersResponse = await ZidApiService.getOrders(xManagerToken, authorizationJwt, 1, 20);
 
             if (ordersResponse && ordersResponse.orders && Array.isArray(ordersResponse.orders) && ordersResponse.orders.length > 0) {
                 const fetchedZidOrders = ordersResponse.orders;
@@ -103,27 +92,33 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                             let experienceIdsToUse: string[] = [];
                             let variationIdsToUse: string[] = [];
                             let attributionSource = "Initial: No Stored Context"; 
-                            let pagePathForLog = 'Unknown'; // Initialize pagePathForLog
-                            let storedContextData: StoredBucketingInfo | undefined = undefined; // Use StoredBucketingInfo type
+                            let pagePathForLog = 'Unknown';
+                            
+                            // ==========================================================================================
+                            // === DEFINITIVE FIX: 'await' the results from the async database function ===============
+                            // ==========================================================================================
+                            let storedContextData: StoredBucketingInfo | null = null;
 
-                            // Attempt 1: Get context by zidCustomerId
-                            storedContextData = getStoredClientContext(zidCustomerId); 
+                            storedContextData = await getStoredClientContext(zidCustomerId); 
+                            
                             if (storedContextData && storedContextData.convertBucketing && storedContextData.convertBucketing.length > 0) {
                                 attributionSource = "Found in Store (by zidCustomerId)";
                                 if(storedContextData.zidPagePath) pagePathForLog = storedContextData.zidPagePath;
                             } else {
-                                // Attempt 2: If not found by zidCustomerId, try by orderId (from purchase signal)
                                 const orderContextKey = `orderctx_${zidOrder.id}`;
                                 console.log(`${orderLogPrefix} Context not found/empty via zidCustomerId. Attempting lookup by orderId key: ${orderContextKey}`);
-                                storedContextData = getStoredClientContext(orderContextKey);
+                                
+                                storedContextData = await getStoredClientContext(orderContextKey);
+                                
                                 if (storedContextData && storedContextData.convertBucketing && storedContextData.convertBucketing.length > 0) {
                                     attributionSource = "Found in Store (by orderId from purchase signal)";
                                     pagePathForLog = storedContextData.zidPagePath || 'N/A (from order context)'; 
                                 } else {
-                                    storedContextData = undefined; 
+                                    storedContextData = null; 
                                     attributionSource = "No Stored Context (tried zidCustomerId & orderId)";
                                 }
                             }
+                            // ==========================================================================================
 
                             if (storedContextData && storedContextData.convertBucketing && Array.isArray(storedContextData.convertBucketing) && storedContextData.convertBucketing.length > 0) {
                                 console.log(`${orderLogPrefix} DEBUG: Using context from ${attributionSource}. Raw storedContext.convertBucketing:`, JSON.stringify(storedContextData.convertBucketing));
@@ -183,24 +178,17 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                         return varId ? String(varId) : null; 
                                     }).filter(function(id: string | null): id is string { return id !== null && id !== undefined; });
                                     
-                                    // attributionSource was already set if context was found
                                     console.log(`${orderLogPrefix} Using ExpIDs from ${attributionSource} (Page: ${pagePathForLog}): [${experienceIdsToUse.join(', ')}] and VarIDs: [${variationIdsToUse.join(', ')}]`);
                                 } else {
                                     attributionSource = attributionSource.includes("Filtered") ? attributionSource : "Stored Context but Filtered to No Valid Buckets";
                                     console.log(`${orderLogPrefix} ${attributionSource} for Zid Customer ID ${zidCustomerId}.`);
                                 }
                             } else {
-                                // This block handles cases where storedContextData itself is undefined,
-                                // or storedContextData.convertBucketing is empty/not an array.
-                                // The attributionSource would have been set accordingly by the lookup logic.
                                 console.log(`${orderLogPrefix} ${attributionSource} for Zid Customer ID ${zidCustomerId}. No usable experiment data.`);
                             }
                             
                             const uniqueTransactionIdForOrder = `zid-order-${zidOrder.id}-${Date.now()}`;
-
-                            const eventSpecifics: { goals: number[]; exps?: string[]; vars?: string[] } = { 
-                                goals: [convertGoalId]
-                            };
+                            const eventSpecifics: { goals: number[]; exps?: string[]; vars?: string[] } = { goals: [convertGoalId] };
                             
                             if (experienceIdsToUse.length > 0 && variationIdsToUse.length > 0 && experienceIdsToUse.length === variationIdsToUse.length) {
                                 eventSpecifics.exps = experienceIdsToUse;
@@ -211,8 +199,8 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                             }
 
                             const hitGoalPayload: ConvertTrackPayload = {
-                                cid: convertAccountId as string, // Added 'as string' for TS
-                                pid: convertProjectId as string, // Added 'as string' for TS
+                                cid: convertAccountId as string,
+                                pid: convertProjectId as string,
                                 vid: zidCustomerId,
                                 tid: uniqueTransactionIdForOrder,
                                 ev: [{ evt: 'hitGoal' as 'hitGoal', ...eventSpecifics }]
@@ -240,8 +228,8 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
 
                             if (revenueForConvertAPI > 0 || productCount > 0) {
                                 const transactionPayload: ConvertTrackPayload = {
-                                    cid: convertAccountId as string, // Added 'as string' for TS
-                                    pid: convertProjectId as string, // Added 'as string' for TS
+                                    cid: convertAccountId as string,
+                                    pid: convertProjectId as string,
                                     vid: zidCustomerId,
                                     tid: uniqueTransactionIdForOrder,
                                     ev: [{
@@ -260,10 +248,6 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                         }
                     }
                 }
-            } else if (ordersResponse && ordersResponse.orders && ordersResponse.orders.length === 0) {
-                console.log("ZidAuthCallback: No Zid orders found in this batch.");
-            } else {
-                console.log("ZidAuthCallback: Failed to fetch Zid orders or response was unexpected.");
             }
         } catch (apiError) {
             const err = apiError as Error;

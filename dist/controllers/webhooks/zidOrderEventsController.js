@@ -1,7 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.zidOrderEventsWebhookController = void 0;
-// DEFINITIVE FIX: Import the new service function and interfaces
 const convert_service_1 = require("../../services/convert-service");
 const currency_service_1 = require("../../services/currency-service");
 const convertContextController_1 = require("../api/convertContextController");
@@ -39,11 +38,13 @@ const zidOrderEventsWebhookController = async (req, res) => {
             console.warn(`${orderLogPrefix} [WEBHOOK] Zid Customer ID missing. Skipping Convert events.`);
             return;
         }
-        const storedContext = (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
+        // ==========================================================================================
+        // === DEFINITIVE ADDITION: Await the response from the new async context function ========
+        // ==========================================================================================
+        const storedContext = await (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
         const visitorIdForConvert = (storedContext === null || storedContext === void 0 ? void 0 : storedContext.convertVisitorId) || zidCustomerId;
         console.log(`${orderLogPrefix} Using VID for Convert payload: '${visitorIdForConvert}' (Source: ${storedContext ? 'Stored Context' : 'Fallback to Zid ID'})`);
         const eventsForConvert = [];
-        // 1. Add a 'bucketing' event for each experiment the user was in.
         if (storedContext && storedContext.convertBucketing.length > 0) {
             console.log(`${orderLogPrefix} Context FOUND. Adding bucketing events.`);
             storedContext.convertBucketing.forEach(bucket => {
@@ -59,7 +60,6 @@ const zidOrderEventsWebhookController = async (req, res) => {
         else {
             console.log(`${orderLogPrefix} Context NOT found. Conversion will be unattributed.`);
         }
-        // 2. Build the detailed products array for the conversion event.
         const finalOrderTotal = parseFloat(zidOrder.order_total || "0");
         const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY;
         const revenueForConvertAPI = await currency_service_1.CurrencyService.convertToSAR(finalOrderTotal, originalCurrencyCode);
@@ -76,10 +76,6 @@ const zidOrderEventsWebhookController = async (req, res) => {
                 };
             }));
         }
-        // 3. Add the single 'conversion' event to the array.
-        // ===================================================================================
-        // === DEFINITIVE FIX: Add the goalId inside the 'data' object =======================
-        // ===================================================================================
         eventsForConvert.push({
             eventType: 'conversion',
             data: {
@@ -89,13 +85,10 @@ const zidOrderEventsWebhookController = async (req, res) => {
                 products: productsForPayload
             }
         });
-        // ===================================================================================
-        // 4. Construct the final visitor object.
         const visitorPayload = {
             visitorId: visitorIdForConvert,
             events: eventsForConvert
         };
-        // 5. Send the entire batch of events to the new service.
         await convert_service_1.ConvertApiService.sendServingApiEvents(convertAccountId, convertProjectId, visitorPayload);
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished API calls to Convert ---`);
     }
