@@ -59,8 +59,10 @@ export interface Product {
     quantity: number;
 }
 
-// DEFINITIVE FIX: This interface is updated to remove account/project IDs
-interface V1ApiPayload {
+// DEFINITIVE FIX: This is the correct payload for the /serving endpoint
+interface ServingApiPayload {
+    accountId: string;
+    projectId: string;
     enrichData: boolean;
     visitors: Visitor[];
 }
@@ -118,42 +120,50 @@ export class ConvertApiService {
     }
 
     // ==========================================================================================
-    // === DEFINITIVE FIX: This function is rewritten to use the correct v1/track endpoint ======
+    // === DEFINITIVE FIX: This function is rewritten to use the correct /serving endpoint ======
     // ==========================================================================================
     public static async sendServingApiEvents(accountId: string, projectId: string, visitor: Visitor): Promise<any | null> {
-        // 1. The URL is now correct, with account and project IDs in the path.
-        const url = `https://metrics.convertexperiments.com/v1/track/${accountId}/${projectId}`;
+        // 1. The URL is now correct for the Serving API.
+        const url = `https://api.convert.com/serving`;
+        const apiSecret = process.env.CONVERT_API_KEY_SECRET;
 
-        // 2. The payload no longer contains accountId or projectId in the body.
-        const payload: V1ApiPayload = {
+        if (!apiSecret) {
+            console.error("CRITICAL: CONVERT_API_KEY_SECRET is not set in .env. Cannot authenticate with the new Serving API.");
+            return null;
+        }
+
+        // 2. The payload now correctly includes accountId and projectId in the body.
+        const payload: ServingApiPayload = {
+            accountId: accountId,
+            projectId: projectId,
             enrichData: true,
             visitors: [visitor]
         };
 
-        // 3. The request no longer needs the X-CONVERT-API-SECRET header.
+        // 3. The request now correctly includes the X-CONVERT-API-SECRET header for authentication.
         const requestHeaders = {
             'Content-Type': 'application/json',
-            'Accept': 'application/json',
+            'X-CONVERT-API-SECRET': apiSecret
         };
 
-        console.log(`\n--- Preparing to send NEW v1/track API payload to Convert.com ---`);
+        console.log(`\n--- Preparing to send NEW SERVING API payload to Convert.com ---`);
         console.log(`URL: ${url}`);
         console.log(JSON.stringify(payload, null, 2));
-        console.log("-----------------------------------------------------------------\n");
+        console.log("----------------------------------------------------------------\n");
 
         try {
-            console.log(`Sending new event batch to Convert v1/track API.`);
+            console.log(`Sending new event batch to Convert Serving API.`);
             const response = await axios.post(url, payload, { headers: requestHeaders });
-            console.log(`New Convert v1/track API events sent successfully. Status:`, response.status); 
+            console.log(`New Convert Serving API events sent successfully. Status:`, response.status); 
             return response.data;
         } catch (error) {
             const axiosError = error as AxiosError;
             if (axiosError.response) {
-                console.error("Error sending to v1/track API - Server responded with error:");
+                console.error("Error sending to Serving API - Server responded with error:");
                 console.error("Status:", axiosError.response.status);
                 console.error("Data:", JSON.stringify(axiosError.response.data, null, 2));
             } else {
-                console.error("Error sending to v1/track API - Error in request setup:", (error as Error).message);
+                console.error("Error sending to Serving API - Error in request setup:", (error as Error).message);
             }
             return null;
         }

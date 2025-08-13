@@ -39,9 +39,9 @@ const zidOrderEventsWebhookController = async (req, res) => {
             return;
         }
         // ==========================================================================================
-        // === DEFINITIVE ADDITION: Await the response from the new async context function ========
+        // === DEFINITIVE FIX: Removed 'await' as we are reverting to the in-memory store =========
         // ==========================================================================================
-        const storedContext = await (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
+        const storedContext = (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
         const visitorIdForConvert = (storedContext === null || storedContext === void 0 ? void 0 : storedContext.convertVisitorId) || zidCustomerId;
         console.log(`${orderLogPrefix} Using VID for Convert payload: '${visitorIdForConvert}' (Source: ${storedContext ? 'Stored Context' : 'Fallback to Zid ID'})`);
         const eventsForConvert = [];

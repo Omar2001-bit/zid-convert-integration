@@ -95,11 +95,11 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                             let pagePathForLog = 'Unknown';
                             
                             // ==========================================================================================
-                            // === DEFINITIVE FIX: 'await' the results from the async database function ===============
+                            // === DEFINITIVE FIX: Revert to synchronous calls for in-memory store ====================
                             // ==========================================================================================
-                            let storedContextData: StoredBucketingInfo | null = null;
+                            let storedContextData: StoredBucketingInfo | undefined = undefined;
 
-                            storedContextData = await getStoredClientContext(zidCustomerId); 
+                            storedContextData = getStoredClientContext(zidCustomerId); 
                             
                             if (storedContextData && storedContextData.convertBucketing && storedContextData.convertBucketing.length > 0) {
                                 attributionSource = "Found in Store (by zidCustomerId)";
@@ -108,13 +108,13 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 const orderContextKey = `orderctx_${zidOrder.id}`;
                                 console.log(`${orderLogPrefix} Context not found/empty via zidCustomerId. Attempting lookup by orderId key: ${orderContextKey}`);
                                 
-                                storedContextData = await getStoredClientContext(orderContextKey);
+                                storedContextData = getStoredClientContext(orderContextKey);
                                 
                                 if (storedContextData && storedContextData.convertBucketing && storedContextData.convertBucketing.length > 0) {
                                     attributionSource = "Found in Store (by orderId from purchase signal)";
                                     pagePathForLog = storedContextData.zidPagePath || 'N/A (from order context)'; 
                                 } else {
-                                    storedContextData = null; 
+                                    storedContextData = undefined; 
                                     attributionSource = "No Stored Context (tried zidCustomerId & orderId)";
                                 }
                             }
