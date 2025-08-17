@@ -1,10 +1,20 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.zidOrderEventsWebhookController = void 0;
+// Ensure all necessary interfaces for both new and existing API calls are imported
 const convert_service_1 = require("../../services/convert-service");
 const currency_service_1 = require("../../services/currency-service");
 const convertContextController_1 = require("../api/convertContextController");
 const TARGET_REPORTING_CURRENCY = 'SAR';
+// This interface is defined locally but `ConvertProductType` from service is used for payload
+/*
+interface ConvertProduct {
+    id: string;
+    name: string;
+    price: number;
+    qty: number;
+}
+*/
 const zidOrderEventsWebhookController = async (req, res) => {
     var _a, _b, _c;
     const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
@@ -63,6 +73,7 @@ const zidOrderEventsWebhookController = async (req, res) => {
         const finalOrderTotal = parseFloat(zidOrder.order_total || "0");
         const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY;
         const revenueForConvertAPI = await currency_service_1.CurrencyService.convertToSAR(finalOrderTotal, originalCurrencyCode);
+        // Corrected type to use Product from convert-service.ts
         let productsForPayload = [];
         if (zidOrder.products && Array.isArray(zidOrder.products)) {
             productsForPayload = await Promise.all(zidOrder.products.map(async (product) => {
@@ -73,7 +84,7 @@ const zidOrderEventsWebhookController = async (req, res) => {
                     productName: product.name,
                     unitPrice: convertedItemPrice,
                     quantity: parseInt(String(product.quantity), 10) || 0
-                };
+                }; // Explicit type assertion
             }));
         }
         eventsForConvert.push({
@@ -89,8 +100,20 @@ const zidOrderEventsWebhookController = async (req, res) => {
             visitorId: visitorIdForConvert,
             events: eventsForConvert
         };
+        // --- EXISTING sendServingApiEvents CALL (PRESERVED) ---
+        // This call is maintained as per your instruction to add, not remove.
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to EXISTING Serving API (PRESERVED) ---`);
         await convert_service_1.ConvertApiService.sendServingApiEvents(convertAccountId, convertProjectId, visitorPayload);
-        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished API calls to Convert ---`);
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished EXISTING Serving API call ---`);
+        // --- END EXISTING sendServingApiEvents CALL ---
+        // --- NEW sendMetricsV1ApiEvents CALL (ADDED) ---
+        // This is the new call to the confirmed v1/track endpoint.
+        // It uses the same visitorPayload as the original webhook's processing.
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to NEW v1/track METRICS API (ADDED) ---`);
+        await convert_service_1.ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished NEW v1/track METRICS API call ---`);
+        // --- END NEW sendMetricsV1ApiEvents CALL ---
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Overall processing complete for Convert ---`);
     }
     catch (error) {
         const err = error;

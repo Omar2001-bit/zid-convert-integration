@@ -1,7 +1,8 @@
 // src/controllers/zid/auth/callback.ts
 import { Request, Response } from 'express';
 import { ZidApiService } from '../../../services/zid-service';
-import { ConvertApiService, ConvertTrackPayload } from '../../../services/convert-service';
+// Updated import: Added modern interfaces for the new API call
+import { ConvertApiService, ConvertTrackPayload, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../../services/convert-service';
 import { getStoredClientContext, StoredBucketingInfo } from '../../api/convertContextController';
 import { CurrencyService } from '../../../services/currency-service';
 
@@ -91,6 +92,7 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                             
                             let experienceIdsToUse: string[] = [];
                             let variationIdsToUse: string[] = [];
+                            let bucketingEventsForConvert: Event[] = []; // Added for new API call
                             let attributionSource = "Initial: No Stored Context"; 
                             let pagePathForLog = 'Unknown';
                             
@@ -179,6 +181,16 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                     }).filter(function(id: string | null): id is string { return id !== null && id !== undefined; });
                                     
                                     console.log(`${orderLogPrefix} Using ExpIDs from ${attributionSource} (Page: ${pagePathForLog}): [${experienceIdsToUse.join(', ')}] and VarIDs: [${variationIdsToUse.join(', ')}]`);
+                                
+                                    // Populate bucketingEventsForConvert for the new API call
+                                    bucketingEventsForConvert = validBuckets.map(b => ({
+                                        eventType: 'bucketing',
+                                        data: {
+                                            experienceId: b.experimentId,
+                                            variationId: b.variationId
+                                        } as BucketingEventData
+                                    }));
+
                                 } else {
                                     attributionSource = attributionSource.includes("Filtered") ? attributionSource : "Stored Context but Filtered to No Valid Buckets";
                                     console.log(`${orderLogPrefix} ${attributionSource} for Zid Customer ID ${zidCustomerId}.`);
@@ -198,6 +210,7 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 console.log(`${orderLogPrefix} No valid experiment data from source: "${attributionSource}". Sending goal without specific exp/var attribution.`);
                             }
 
+                            // --- EXISTING LEGACY API CALL (PRESERVED - hitGoal) ---
                             const hitGoalPayload: ConvertTrackPayload = {
                                 cid: convertAccountId as string,
                                 pid: convertProjectId as string,
@@ -205,8 +218,9 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 tid: uniqueTransactionIdForOrder,
                                 ev: [{ evt: 'hitGoal' as 'hitGoal', ...eventSpecifics }]
                             };
-                            console.log(`${orderLogPrefix} Preparing 'hitGoal' event:`, JSON.stringify(hitGoalPayload, null, 0));
+                            console.log(`${orderLogPrefix} Preparing 'hitGoal' event (LEGACY API CALL - PRESERVED):`, JSON.stringify(hitGoalPayload, null, 0));
                             await ConvertApiService.sendEventToConvert(hitGoalPayload);
+                            // --- END EXISTING LEGACY API CALL (hitGoal) ---
 
                             const originalOrderTotal = parseFloat(zidOrder.order_total || "0");
                             const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY; 
@@ -227,6 +241,7 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                                : (revenueForConvertAPI > 0 ? 1 : 0);
 
                             if (revenueForConvertAPI > 0 || productCount > 0) {
+                                // --- EXISTING LEGACY API CALL (PRESERVED - tr) ---
                                 const transactionPayload: ConvertTrackPayload = {
                                     cid: convertAccountId as string,
                                     pid: convertProjectId as string,
@@ -239,12 +254,52 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                         prc: productCount
                                     }]
                                 };
-                                console.log(`${orderLogPrefix} Preparing 'tr' event (Revenue in ${TARGET_REPORTING_CURRENCY}):`, JSON.stringify(transactionPayload, null, 0));
+                                console.log(`${orderLogPrefix} Preparing 'tr' event (Revenue in ${TARGET_REPORTING_CURRENCY}) (LEGACY API CALL - PRESERVED):`, JSON.stringify(transactionPayload, null, 0));
                                 await ConvertApiService.sendEventToConvert(transactionPayload);
+                                // --- END EXISTING LEGACY API CALL (tr) ---
+
+                                // --- NEW MODERN METRICS V1 API CALL (ADDED - conversion event) ---
+                                // Products array for the new API payload
+                                let productsForNewPayload: Product[] = [];
+                                if (zidOrder.products && Array.isArray(zidOrder.products)) {
+                                    productsForNewPayload = await Promise.all(
+                                        zidOrder.products.map(async (product: any) => {
+                                            const itemPrice = parseFloat(String(product.price)) || 0;
+                                            const convertedItemPrice = await CurrencyService.convertToSAR(itemPrice, originalCurrencyCode);
+                                            return {
+                                                productId: product.sku || String(product.id),
+                                                productName: product.name,
+                                                unitPrice: convertedItemPrice,
+                                                quantity: parseInt(String(product.quantity), 10) || 0
+                                            } as Product;
+                                        })
+                                    );
+                                }
+
+                                const newModernConversionEvent: Event = {
+                                    eventType: 'conversion',
+                                    data: {
+                                        goalId: convertGoalId,
+                                        transactionId: uniqueTransactionIdForOrder,
+                                        revenue: revenueForConvertAPI,
+                                        products: productsForNewPayload
+                                    } as ConversionEventData
+                                };
+
+                                // Combine bucketing events (if any) and the new conversion event for the visitor payload
+                                const newModernVisitorPayload: Visitor = {
+                                    visitorId: zidCustomerId,
+                                    events: [...bucketingEventsForConvert, newModernConversionEvent]
+                                };
+
+                                console.log(`${orderLogPrefix} Preparing NEW v1/track METRICS API payload (ADDED - Conversion):`, JSON.stringify(newModernVisitorPayload, null, 2));
+                                await ConvertApiService.sendMetricsV1ApiEvents(newModernVisitorPayload);
+                                // --- END NEW MODERN METRICS V1 API CALL (conversion event) ---
+
                             } else {
-                                console.log(`${orderLogPrefix} Skipping 'tr' event as revenue/product count is zero.`);
+                                console.log(`${orderLogPrefix} Skipping 'tr' event (legacy) and new 'conversion' event as revenue/product count is zero.`);
                             }
-                            console.log(`--- ${orderLogPrefix} Finished API calls to Convert ---`);
+                            console.log(`--- ${orderLogPrefix} Finished Convert API calls for this order (both legacy and new) ---`);
                         }
                     }
                 }

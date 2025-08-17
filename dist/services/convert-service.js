@@ -4,13 +4,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ConvertApiService = void 0;
-// src/services/convert-service.ts
 const axios_1 = __importDefault(require("axios"));
 class ConvertApiService {
     constructor() {
         // Empty constructor
     }
     // Your original function is preserved but will no longer be used by the webhook.
+    // Kept as per instruction: "do not remove anything from the file just add"
     static async sendEventToConvert(payload) {
         const projectIdForSubdomain = process.env.CONVERT_PROJECT_ID;
         if (!projectIdForSubdomain) {
@@ -27,9 +27,9 @@ class ConvertApiService {
             'Accept': 'application/json',
             'User-Agent': 'Zid-Convert-Integration-Server/1.0',
         };
-        console.log("\n--- Preparing to send final payload to Convert.com ---");
+        console.log("\n--- Preparing to send final payload to Convert.com (LEGACY SUBDOMAIN API) ---");
         console.log(JSON.stringify(payload, null, 2));
-        console.log("------------------------------------------------------\n");
+        console.log("--------------------------------------------------------------------------------\n");
         try {
             console.log(`Sending event to Convert. URL: ${url}`);
             const response = await axios_1.default.post(url, payload, { headers: requestHeaders });
@@ -39,22 +39,23 @@ class ConvertApiService {
         catch (error) {
             const axiosError = error;
             if (axiosError.response) {
-                console.error("Error sending event to Convert - Server responded with error:");
+                console.error("Error sending event to Convert (LEGACY SUBDOMAIN API) - Server responded with error:");
                 console.error("Status:", axiosError.response.status);
                 console.error("Data:", JSON.stringify(axiosError.response.data, null, 2));
             }
             else if (axiosError.request) {
-                console.error("Error sending event to Convert - No response received. Request was made to:", url);
+                console.error("Error sending event to Convert (LEGACY SUBDOMAIN API) - No response received. Request was made to:", url);
             }
             else {
-                console.error("Error sending event to Convert - Error in request setup:", error.message);
+                console.error("Error sending event to Convert (LEGACY SUBDOMAIN API) - Error in request setup:", error.message);
             }
             return null;
         }
     }
     // ==========================================================================================
-    // === DEFINITIVE FIX: This function is rewritten to use the correct /serving endpoint ======
+    // === Existing sendServingApiEvents function (targeting /serving endpoint) kept as is ======
     // ==========================================================================================
+    // Kept as per instruction: "do not remove anything from the file just add"
     static async sendServingApiEvents(accountId, projectId, visitor) {
         // 1. The URL is now correct for the Serving API.
         const url = `https://api.convert.com/serving`;
@@ -75,10 +76,10 @@ class ConvertApiService {
             'Content-Type': 'application/json',
             'X-CONVERT-API-SECRET': apiSecret
         };
-        console.log(`\n--- Preparing to send NEW SERVING API payload to Convert.com ---`);
+        console.log(`\n--- Preparing to send EXISTING SERVING API payload to Convert.com ---`);
         console.log(`URL: ${url}`);
         console.log(JSON.stringify(payload, null, 2));
-        console.log("----------------------------------------------------------------\n");
+        console.log("---------------------------------------------------------------------\n");
         try {
             console.log(`Sending new event batch to Convert Serving API.`);
             const response = await axios_1.default.post(url, payload, { headers: requestHeaders });
@@ -94,6 +95,54 @@ class ConvertApiService {
             }
             else {
                 console.error("Error sending to Serving API - Error in request setup:", error.message);
+            }
+            return null;
+        }
+    }
+    // ==========================================================================================
+    // === NEW FUNCTION: Implements the confirmed Metrics Tracking API (v1/track) endpoint ======
+    // ==========================================================================================
+    static async sendMetricsV1ApiEvents(visitor) {
+        const accountId = process.env.CONVERT_ACCOUNT_ID;
+        const projectId = process.env.CONVERT_PROJECT_ID;
+        const apiSecret = process.env.CONVERT_API_KEY_SECRET;
+        if (!accountId || !projectId) {
+            console.error("CRITICAL: CONVERT_ACCOUNT_ID or CONVERT_PROJECT_ID is missing from .env. Cannot construct Convert API URL for v1/track.");
+            return null;
+        }
+        if (!apiSecret) {
+            console.error("CRITICAL: CONVERT_API_KEY_SECRET is not set in .env. Cannot authenticate with the Metrics API (v1/track).");
+            return null;
+        }
+        // ✅ Confirmed correct endpoint as per our discussion
+        const url = `https://metrics.convertexperiments.com/v1/track/${accountId}/${projectId}`;
+        // Payload structure for v1/track endpoint
+        const payload = {
+            visitors: [visitor]
+        };
+        const requestHeaders = {
+            'Content-Type': 'application/json',
+            'X-CONVERT-API-SECRET': apiSecret
+        };
+        console.log(`\n--- Preparing to send NEW v1/track METRICS API payload to Convert.com ---`);
+        console.log(`URL: ${url}`);
+        console.log(JSON.stringify(payload, null, 2));
+        console.log("--------------------------------------------------------------------------\n");
+        try {
+            console.log(`Sending visitor events to Convert Metrics API (v1/track)...`);
+            const response = await axios_1.default.post(url, payload, { headers: requestHeaders });
+            console.log(`Metrics API (v1/track) events sent successfully. Status:`, response.status);
+            return response.data;
+        }
+        catch (error) {
+            const axiosError = error;
+            if (axiosError.response) {
+                console.error("Error sending to Metrics API (v1/track) - Server responded with error:");
+                console.error("Status:", axiosError.response.status);
+                console.error("Data:", JSON.stringify(axiosError.response.data, null, 2));
+            }
+            else {
+                console.error("Error sending to Metrics API (v1/track) - Error in request setup:", error.message);
             }
             return null;
         }

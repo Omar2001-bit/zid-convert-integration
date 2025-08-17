@@ -1,6 +1,7 @@
 // src/controllers/webhooks/zidOrderEventsController.ts
 import { Request, Response } from 'express';
-import { ConvertApiService, Event, Visitor } from '../../services/convert-service';
+// Ensure all necessary interfaces for both new and existing API calls are imported
+import { ConvertApiService, Event, Visitor, Product as ConvertProductType } from '../../services/convert-service';
 import { CurrencyService } from '../../services/currency-service';
 import { getStoredClientContext } from '../api/convertContextController';
 
@@ -14,12 +15,15 @@ interface ZidProduct {
     quantity: number | string;
 }
 
+// This interface is defined locally but `ConvertProductType` from service is used for payload
+/*
 interface ConvertProduct {
     id: string;
     name: string;
     price: number;
     qty: number;
 }
+*/
 
 export const zidOrderEventsWebhookController = async (req: Request, res: Response) => {
     const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
@@ -91,7 +95,8 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY;
         const revenueForConvertAPI = await CurrencyService.convertToSAR(finalOrderTotal, originalCurrencyCode);
 
-        let productsForPayload: any[] = [];
+        // Corrected type to use Product from convert-service.ts
+        let productsForPayload: ConvertProductType[] = []; 
         if (zidOrder.products && Array.isArray(zidOrder.products)) {
             productsForPayload = await Promise.all(
                 zidOrder.products.map(async (product: ZidProduct) => {
@@ -102,7 +107,7 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                         productName: product.name,
                         unitPrice: convertedItemPrice,
                         quantity: parseInt(String(product.quantity), 10) || 0
-                    };
+                    } as ConvertProductType; // Explicit type assertion
                 })
             );
         }
@@ -122,9 +127,22 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             events: eventsForConvert
         };
 
+        // --- EXISTING sendServingApiEvents CALL (PRESERVED) ---
+        // This call is maintained as per your instruction to add, not remove.
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to EXISTING Serving API (PRESERVED) ---`);
         await ConvertApiService.sendServingApiEvents(convertAccountId, convertProjectId, visitorPayload);
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished EXISTING Serving API call ---`);
+        // --- END EXISTING sendServingApiEvents CALL ---
 
-        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished API calls to Convert ---`);
+        // --- NEW sendMetricsV1ApiEvents CALL (ADDED) ---
+        // This is the new call to the confirmed v1/track endpoint.
+        // It uses the same visitorPayload as the original webhook's processing.
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to NEW v1/track METRICS API (ADDED) ---`);
+        await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished NEW v1/track METRICS API call ---`);
+        // --- END NEW sendMetricsV1ApiEvents CALL ---
+
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Overall processing complete for Convert ---`);
 
     } catch (error) {
         const err = error as Error;
