@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.zidOrderEventsWebhookController = void 0;
-// Ensure all necessary interfaces for both new and existing API calls are imported
+// Ensure all necessary interfaces for the new API calls are imported
 const convert_service_1 = require("../../services/convert-service");
 const currency_service_1 = require("../../services/currency-service");
 const convertContextController_1 = require("../api/convertContextController");
@@ -38,8 +38,7 @@ const zidOrderEventsWebhookController = async (req, res) => {
             console.error("Webhook payload did not contain a valid order ID. Body:", zidOrder);
             return;
         }
-        const convertAccountId = process.env.CONVERT_ACCOUNT_ID;
-        const convertProjectId = process.env.CONVERT_PROJECT_ID;
+        // Removed convertAccountId and convertProjectId as they are no longer needed here
         const convertGoalId = parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE, 10);
         const orderLogPrefix = `[ZidOrder ${zidOrder.id}, Cust ${((_a = zidOrder.customer) === null || _a === void 0 ? void 0 : _a.id) || 'N/A'}]`;
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
@@ -49,7 +48,7 @@ const zidOrderEventsWebhookController = async (req, res) => {
             return;
         }
         // ==========================================================================================
-        // === DEFINITIVE FIX: Removed 'await' as we are reverting to the in-memory store =========
+        // === Reverted to synchronous calls for in-memory store ==================================
         // ==========================================================================================
         const storedContext = (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
         const visitorIdForConvert = (storedContext === null || storedContext === void 0 ? void 0 : storedContext.convertVisitorId) || zidCustomerId;
@@ -100,19 +99,16 @@ const zidOrderEventsWebhookController = async (req, res) => {
             visitorId: visitorIdForConvert,
             events: eventsForConvert
         };
-        // --- EXISTING sendServingApiEvents CALL (PRESERVED) ---
-        // This call is maintained as per your instruction to add, not remove.
-        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to EXISTING Serving API (PRESERVED) ---`);
-        await convert_service_1.ConvertApiService.sendServingApiEvents(convertAccountId, convertProjectId, visitorPayload);
-        console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished EXISTING Serving API call ---`);
-        // --- END EXISTING sendServingApiEvents CALL ---
-        // --- NEW sendMetricsV1ApiEvents CALL (ADDED) ---
+        // --- Removed: Failing sendServingApiEvents CALL ---
+        // As confirmed by live logs, this endpoint (https://api.convert.com/serving)
+        // does not support POST for data submission (returns 405 Method Not Allowed).
+        // It has been removed for a cleaner, functional codebase.
+        // --- Active: NEW v1/track METRICS API CALL ---
         // This is the new call to the confirmed v1/track endpoint.
         // It uses the same visitorPayload as the original webhook's processing.
-        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to NEW v1/track METRICS API (ADDED) ---`);
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to NEW v1/track METRICS API ---`);
         await convert_service_1.ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Finished NEW v1/track METRICS API call ---`);
-        // --- END NEW sendMetricsV1ApiEvents CALL ---
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Overall processing complete for Convert ---`);
     }
     catch (error) {

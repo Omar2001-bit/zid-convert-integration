@@ -1,8 +1,8 @@
 // src/controllers/zid/auth/callback.ts
 import { Request, Response } from 'express';
 import { ZidApiService } from '../../../services/zid-service';
-// Updated import: Added modern interfaces for the new API call
-import { ConvertApiService, ConvertTrackPayload, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../../services/convert-service';
+// Updated import: Removed ConvertTrackPayload as it's no longer used, kept modern interfaces
+import { ConvertApiService, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../../services/convert-service';
 import { getStoredClientContext, StoredBucketingInfo } from '../../api/convertContextController';
 import { CurrencyService } from '../../../services/currency-service';
 
@@ -69,11 +69,9 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                 const fetchedZidOrders = ordersResponse.orders;
                 console.log(`ZidAuthCallback: Fetched ${fetchedZidOrders.length} Zid Orders. Processing for Convert...`);
 
-                const convertAccountId = process.env.CONVERT_ACCOUNT_ID;
-                const convertProjectId = process.env.CONVERT_PROJECT_ID;
                 const convertGoalIdString = process.env.CONVERT_GOAL_ID_FOR_PURCHASE;
 
-                if (!convertAccountId || !convertProjectId || !convertGoalIdString) {
+                if (!convertGoalIdString) {
                     console.error("ZidAuthCallback: Essential Convert configuration missing from .env.");
                 } else {
                     const convertGoalId = parseInt(convertGoalIdString, 10);
@@ -90,9 +88,10 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 continue;
                             }
                             
-                            let experienceIdsToUse: string[] = [];
+                            // Re-added declarations for experienceIdsToUse and variationIdsToUse
+                            let experienceIdsToUse: string[] = []; 
                             let variationIdsToUse: string[] = [];
-                            let bucketingEventsForConvert: Event[] = []; // Added for new API call
+                            let bucketingEventsForConvert: Event[] = []; 
                             let attributionSource = "Initial: No Stored Context"; 
                             let pagePathForLog = 'Unknown';
                             
@@ -126,26 +125,10 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 console.log(`${orderLogPrefix} DEBUG: Using context from ${attributionSource}. Raw storedContext.convertBucketing:`, JSON.stringify(storedContextData.convertBucketing));
                                 
                                 const validBuckets = storedContextData.convertBucketing.filter(
-                                    function(b: any, index: number) { 
-                                        console.log(`${orderLogPrefix} DEBUG: ------ Filtering bucket #${index} ------`);
-                                        console.log(`${orderLogPrefix} DEBUG: Bucket #${index} RAW object (via JSON.stringify):`, JSON.stringify(b));
-
-                                        var expIdValue = undefined;
-                                        if (b && Object.prototype.hasOwnProperty.call(b, 'experimentId')) {
-                                            expIdValue = b.experimentId;
-                                        }
-                                        var varIdValue = undefined;
-                                        if (b && Object.prototype.hasOwnProperty.call(b, 'variationId')) {
-                                            varIdValue = b.variationId;
-                                        }
-
-                                        console.log(`${orderLogPrefix} DEBUG: Bucket #${index} - After direct access - expIdValue: "${expIdValue}" (type: ${typeof expIdValue}), varIdValue: "${varIdValue}" (type: ${typeof varIdValue})`);
-
-                                        var hasExpId = typeof expIdValue === 'string' && expIdValue.trim().length > 0;
-                                        var hasVarId = typeof varIdValue === 'string' && varIdValue.trim().length > 0;
-                                        
-                                        console.log(`${orderLogPrefix} DEBUG: Bucket #${index} - Final checks - hasExpId: ${hasExpId}, hasVarId: ${hasVarId}`);
-                                        console.log(`${orderLogPrefix} DEBUG: ------ End Filtering bucket #${index} ------`);
+                                    // Simplified filtering logic to prevent TS errors due to function expression scope
+                                    (b) => { 
+                                        const hasExpId = typeof b.experimentId === 'string' && b.experimentId.trim().length > 0;
+                                        const hasVarId = typeof b.variationId === 'string' && b.variationId.trim().length > 0;
                                         return hasExpId && hasVarId;
                                     }
                                 );
@@ -154,31 +137,17 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
 
                                 if (validBuckets.length > 0) {
                                     console.log(`${orderLogPrefix} DEBUG: Entering .map() for experienceIdsToUse. validBuckets about to be mapped:`, JSON.stringify(validBuckets));
-                                    experienceIdsToUse = validBuckets.map(function(vb: any, mapIndex: number) {
-                                        console.log(`${orderLogPrefix} DEBUG: Mapping experienceId for bucket #${mapIndex}:`, JSON.stringify(vb));
-                                        var expId = null; 
-                                        if (vb && Object.prototype.hasOwnProperty.call(vb, 'experimentId')) {
-                                            expId = vb.experimentId;
-                                            console.log(`${orderLogPrefix} DEBUG: Bucket #${mapIndex} - vb.experimentId is "${expId}" (type: ${typeof expId})`);
-                                        } else {
-                                            console.log(`${orderLogPrefix} DEBUG: Bucket #${mapIndex} - vb OR vb.experimentId is missing/falsy in map for exp.`);
-                                        }
-                                        return expId ? String(expId) : null; 
-                                    }).filter(function(id: string | null): id is string { return id !== null && id !== undefined; });
+                                    experienceIdsToUse = validBuckets.map(
+                                        // Simplified mapping logic
+                                        (vb) => vb.experimentId ? String(vb.experimentId) : null
+                                    ).filter(function(id: string | null): id is string { return id !== null && id !== undefined; });
 
 
                                     console.log(`${orderLogPrefix} DEBUG: Entering .map() for variationIdsToUse. validBuckets about to be mapped:`, JSON.stringify(validBuckets));
-                                    variationIdsToUse = validBuckets.map(function(vb: any, mapIndex: number) {
-                                        console.log(`${orderLogPrefix} DEBUG: Mapping variationId for bucket #${mapIndex}:`, JSON.stringify(vb));
-                                        var varId = null; 
-                                        if (vb && Object.prototype.hasOwnProperty.call(vb, 'variationId')) {
-                                            varId = vb.variationId;
-                                            console.log(`${orderLogPrefix} DEBUG: Bucket #${mapIndex} - vb.variationId is "${varId}" (type: ${typeof varId})`);
-                                        } else {
-                                            console.log(`${orderLogPrefix} DEBUG: Bucket #${mapIndex} - vb OR vb.variationId is missing/falsy in map for var.`);
-                                        }
-                                        return varId ? String(varId) : null; 
-                                    }).filter(function(id: string | null): id is string { return id !== null && id !== undefined; });
+                                    variationIdsToUse = validBuckets.map(
+                                        // Simplified mapping logic
+                                        (vb) => vb.variationId ? String(vb.variationId) : null
+                                    ).filter(function(id: string | null): id is string { return id !== null && id !== undefined; });
                                     
                                     console.log(`${orderLogPrefix} Using ExpIDs from ${attributionSource} (Page: ${pagePathForLog}): [${experienceIdsToUse.join(', ')}] and VarIDs: [${variationIdsToUse.join(', ')}]`);
                                 
@@ -200,28 +169,9 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                             }
                             
                             const uniqueTransactionIdForOrder = `zid-order-${zidOrder.id}-${Date.now()}`;
-                            const eventSpecifics: { goals: number[]; exps?: string[]; vars?: string[] } = { goals: [convertGoalId] };
+                            // Removed eventSpecifics as it was only for the removed legacy API calls
+                            // Removed hitGoalPayload creation and call to ConvertApiService.sendEventToConvert
                             
-                            if (experienceIdsToUse.length > 0 && variationIdsToUse.length > 0 && experienceIdsToUse.length === variationIdsToUse.length) {
-                                eventSpecifics.exps = experienceIdsToUse;
-                                eventSpecifics.vars = variationIdsToUse;
-                                console.log(`${orderLogPrefix} Attributing to experiments from: ${attributionSource}`);
-                            } else {
-                                console.log(`${orderLogPrefix} No valid experiment data from source: "${attributionSource}". Sending goal without specific exp/var attribution.`);
-                            }
-
-                            // --- EXISTING LEGACY API CALL (PRESERVED - hitGoal) ---
-                            const hitGoalPayload: ConvertTrackPayload = {
-                                cid: convertAccountId as string,
-                                pid: convertProjectId as string,
-                                vid: zidCustomerId,
-                                tid: uniqueTransactionIdForOrder,
-                                ev: [{ evt: 'hitGoal' as 'hitGoal', ...eventSpecifics }]
-                            };
-                            console.log(`${orderLogPrefix} Preparing 'hitGoal' event (LEGACY API CALL - PRESERVED):`, JSON.stringify(hitGoalPayload, null, 0));
-                            await ConvertApiService.sendEventToConvert(hitGoalPayload);
-                            // --- END EXISTING LEGACY API CALL (hitGoal) ---
-
                             const originalOrderTotal = parseFloat(zidOrder.order_total || "0");
                             const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY; 
                             let revenueForConvertAPI = 0;
@@ -236,29 +186,11 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 }
                             }
                             
-                            const productCount = (zidOrder.products && Array.isArray(zidOrder.products) && zidOrder.products.length > 0) 
-                                               ? zidOrder.products.length
-                                               : (revenueForConvertAPI > 0 ? 1 : 0);
+                            // Removed productCount calculation if only used for legacy 'tr' event
+                            // Removed transactionPayload creation and call to ConvertApiService.sendEventToConvert
 
-                            if (revenueForConvertAPI > 0 || productCount > 0) {
-                                // --- EXISTING LEGACY API CALL (PRESERVED - tr) ---
-                                const transactionPayload: ConvertTrackPayload = {
-                                    cid: convertAccountId as string,
-                                    pid: convertProjectId as string,
-                                    vid: zidCustomerId,
-                                    tid: uniqueTransactionIdForOrder,
-                                    ev: [{
-                                        evt: 'tr' as 'tr',
-                                        ...eventSpecifics, 
-                                        r: revenueForConvertAPI,
-                                        prc: productCount
-                                    }]
-                                };
-                                console.log(`${orderLogPrefix} Preparing 'tr' event (Revenue in ${TARGET_REPORTING_CURRENCY}) (LEGACY API CALL - PRESERVED):`, JSON.stringify(transactionPayload, null, 0));
-                                await ConvertApiService.sendEventToConvert(transactionPayload);
-                                // --- END EXISTING LEGACY API CALL (tr) ---
-
-                                // --- NEW MODERN METRICS V1 API CALL (ADDED - conversion event) ---
+                            if (revenueForConvertAPI > 0) { // Condition simplified to check revenue for sending conversion
+                                // --- NEW MODERN METRICS V1 API CALL (Conversion event) ---
                                 // Products array for the new API payload
                                 let productsForNewPayload: Product[] = [];
                                 if (zidOrder.products && Array.isArray(zidOrder.products)) {
@@ -292,14 +224,14 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                     events: [...bucketingEventsForConvert, newModernConversionEvent]
                                 };
 
-                                console.log(`${orderLogPrefix} Preparing NEW v1/track METRICS API payload (ADDED - Conversion):`, JSON.stringify(newModernVisitorPayload, null, 2));
+                                console.log(`${orderLogPrefix} Preparing NEW v1/track METRICS API payload (Conversion):`, JSON.stringify(newModernVisitorPayload, null, 2));
                                 await ConvertApiService.sendMetricsV1ApiEvents(newModernVisitorPayload);
                                 // --- END NEW MODERN METRICS V1 API CALL (conversion event) ---
 
                             } else {
-                                console.log(`${orderLogPrefix} Skipping 'tr' event (legacy) and new 'conversion' event as revenue/product count is zero.`);
+                                console.log(`${orderLogPrefix} Skipping new 'conversion' event as revenue is zero.`);
                             }
-                            console.log(`--- ${orderLogPrefix} Finished Convert API calls for this order (both legacy and new) ---`);
+                            console.log(`--- ${orderLogPrefix} Finished Convert API calls for this order ---`); // Simplified log
                         }
                     }
                 }

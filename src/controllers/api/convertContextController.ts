@@ -1,7 +1,7 @@
 // src/controllers/api/convertContextController.ts
 import { Request, Response } from 'express';
-// Added new interfaces from convert-service to allow construction of the modern payload
-import { ConvertApiService, ConvertTrackPayload, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../services/convert-service';
+// Updated import: Removed ConvertTrackPayload as it's no longer used, kept modern interfaces
+import { ConvertApiService, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../services/convert-service';
 
 interface ConvertClientContextPayload {
     zidPagePath: string;
@@ -99,7 +99,7 @@ export const captureConvertContextController = async (req: Request, res: Respons
     }
 };
 
-// --- handlePurchaseSignalController: Existing code preserved, NEW API call added ---
+// --- handlePurchaseSignalController: Now exclusively uses the new Metrics V1 API call ---
 interface PurchaseSignalPayload {
     convertVisitorId: string | null;
     experiments: Array<{ experimentId: string; variationId: string; }>; // Uses 'experimentId'
@@ -139,12 +139,10 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
         }
 
         if (payload.convertVisitorId) {
-            const convertAccountId = process.env.CONVERT_ACCOUNT_ID;
-            const convertProjectId = process.env.CONVERT_PROJECT_ID;
             const convertGoalIdString = process.env.CONVERT_GOAL_ID_FOR_PURCHASE;
 
-            if (!convertAccountId || !convertProjectId || !convertGoalIdString) { 
-                console.error("/api/signal-purchase: Essential Convert configuration missing.");
+            if (!convertGoalIdString) { 
+                console.error("/api/signal-purchase: Essential Convert Goal ID configuration missing.");
                 return res.status(500).json({ message: "Server configuration error for Convert tracking." });
             }
             const convertGoalId = parseInt(convertGoalIdString, 10);
@@ -153,44 +151,17 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
                 return res.status(500).json({ message: "Server configuration error: Invalid Convert Goal ID." });
             }
 
-            // --- EXISTING LEGACY API CALL (PRESERVED) ---
-            // These variables are used by the preserved legacy API call
-            const experienceIds = payload.experiments.map(function(exp) { return exp.experimentId; }).filter(function(id) { return !!id; });
-            const variationIds = payload.experiments.map(function(exp) { return exp.variationId; }).filter(function(id) { return !!id; });
-
-            const commonPayloadParts = {
-                cid: convertAccountId as string,
-                pid: convertProjectId as string,
-                vid: payload.convertVisitorId,
-            };
-            const eventSpecifics: { goals: number[]; exps?: string[]; vars?: string[] } = { goals: [convertGoalId] };
-            if (experienceIds.length > 0 && variationIds.length > 0 && experienceIds.length === variationIds.length) {
-                eventSpecifics.exps = experienceIds as string[];
-                eventSpecifics.vars = variationIds as string[];
-            }
-
-            const hitGoalTid = `signal-hitGoal-${payload.convertVisitorId}-${payload.zidOrderId || 'noOrder'}-${Date.now()}`;
-            const hitGoalPayload: ConvertTrackPayload = {
-                ...commonPayloadParts,
-                tid: hitGoalTid,
-                ev: [{ evt: 'hitGoal' as 'hitGoal', ...eventSpecifics }]
-            };
-            console.log("Purchase signal: Preparing 'hitGoal' event to Convert (LEGACY API CALL - PRESERVED):", JSON.stringify(hitGoalPayload, null, 0));
-            // This call remains active as per instructions
-            await ConvertApiService.sendEventToConvert(hitGoalPayload);
-            // --- END EXISTING LEGACY API CALL ---
-
-            // --- NEW MODERN METRICS V1 API CALL (ADDED) ---
+            // --- NEW MODERN METRICS V1 API CALL ---
             const newModernHitGoalTid = `signal-metrics-v1-${payload.convertVisitorId}-${payload.zidOrderId || 'noOrder'}-${Date.now()}`;
 
             // Prepare bucketing events from the signal payload
             const bucketingEvents: Event[] = payload.experiments
-                // CORRECTED: Use 'exp.experimentId' as defined in PurchaseSignalPayload
+                // Use 'exp.experimentId' as defined in PurchaseSignalPayload
                 .filter(exp => exp.experimentId && exp.variationId) 
                 .map(exp => ({
                     eventType: 'bucketing',
                     data: {
-                        // CORRECTED: Map 'experimentId' from payload to 'experienceId' for BucketingEventData
+                        // Map 'experimentId' from payload to 'experienceId' for BucketingEventData
                         experienceId: exp.experimentId!, 
                         variationId: exp.variationId!
                     } as BucketingEventData
@@ -213,13 +184,13 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
                 events: [...bucketingEvents, conversionEvent] // Include both bucketing and conversion
             };
 
-            console.log("Purchase signal: Preparing NEW v1/track METRICS API payload to Convert (ADDED):", JSON.stringify(visitorPayload, null, 2));
+            console.log("Purchase signal: Preparing NEW v1/track METRICS API payload to Convert:", JSON.stringify(visitorPayload, null, 2));
             
             // Calling the new, correct ConvertApiService.sendMetricsV1ApiEvents
             await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
             // --- END NEW MODERN METRICS V1 API CALL ---
 
-            res.status(200).json({ message: "Purchase signal processed, context stored by order ID (if provided & valid experiments), Convert API events dispatched (both legacy and new)." });
+            res.status(200).json({ message: "Purchase signal processed, context stored by order ID (if provided & valid experiments), Convert API events dispatched." });
         } else {
             console.log("Purchase signal: No convertVisitorId in payload, so Convert API dispatch was skipped. Context may have been stored by orderId if provided.");
             res.status(200).json({ message: "Purchase signal received, context stored by order ID (if provided and experiments present). No Convert events sent due to missing convertVisitorId." });
