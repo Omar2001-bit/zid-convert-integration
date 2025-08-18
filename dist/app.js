@@ -25,6 +25,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
+var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
 // src/app.ts
 const express_1 = __importDefault(require("express"));
@@ -37,23 +38,28 @@ const routes_1 = __importDefault(require("./routes"));
 const admin = __importStar(require("firebase-admin")); // Added: Import firebase-admin
 dotenv_1.default.config();
 const app = (0, express_1.default)();
-// Added: Initialize Firebase Admin SDK
+// MODIFIED: Initialize Firebase Admin SDK using individual environment variables
 try {
-    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    if (!serviceAccountKey) {
-        throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK cannot be initialized.');
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const privateKey = (_a = process.env.FIREBASE_PRIVATE_KEY) === null || _a === void 0 ? void 0 : _a.replace(/\\n/g, '\n'); // Crucial: Replace escaped newline characters with actual newlines
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    if (!projectId || !privateKey || !clientEmail) {
+        throw new Error('Missing essential Firebase environment variables (projectId, privateKey, clientEmail). Cannot initialize Firebase Admin SDK.');
     }
-    // Attempt to parse the service account key JSON string
-    const parsedServiceAccount = JSON.parse(serviceAccountKey);
+    // REVISED initialization config using only projectId, privateKey, and clientEmail (other client details are autodiscovered)
     admin.initializeApp({
-        credential: admin.credential.cert(parsedServiceAccount)
+        credential: admin.credential.cert({
+            projectId: projectId,
+            privateKey: privateKey,
+            clientEmail: clientEmail
+        })
     });
-    console.log('Firebase Admin SDK initialized successfully.');
+    console.log('Firebase Admin SDK initialized successfully (using environment variables).');
 }
 catch (error) {
-    console.error('ERROR: Failed to initialize Firebase Admin SDK:', error instanceof Error ? error.message : error);
-    // Depending on the criticality for the application to function,
-    // you might choose to exit the process here: process.exit(1);
+    console.error('ERROR: Failed to initialize Firebase Admin SDK (using environment variables):', error.message);
+    // Depending on severity, you might want to exit the process or log more robustly
+    // process.exit(1);
 }
 // --- CORS Configuration ---
 const allowedOrigins = [
@@ -76,7 +82,7 @@ app.use((0, helmet_1.default)());
 app.use((0, compression_1.default)());
 // This is the correct, robust body parser configuration.
 app.use(body_parser_1.default.text({ type: '*/*' }));
-app.use(body_parser_1.default.urlencoded({ extended: false }));
+app.use(body_parser_1.default.urlencoded({ extended: true }));
 app.use('/', routes_1.default);
 // --- Basic Error Handling ---
 app.use((req, res, next) => {

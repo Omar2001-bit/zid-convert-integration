@@ -12,25 +12,30 @@ dotenv.config();
 
 const app = express();
 
-// Added: Initialize Firebase Admin SDK
+// MODIFIED: Initialize Firebase Admin SDK using individual environment variables
 try {
-  const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-  if (!serviceAccountKey) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK cannot be initialized.');
-  }
-  // Attempt to parse the service account key JSON string
-  const parsedServiceAccount = JSON.parse(serviceAccountKey);
-  
-  admin.initializeApp({
-    credential: admin.credential.cert(parsedServiceAccount)
-  });
-  console.log('Firebase Admin SDK initialized successfully.');
-} catch (error) {
-  console.error('ERROR: Failed to initialize Firebase Admin SDK:', error instanceof Error ? error.message : error);
-  // Depending on the criticality for the application to function,
-  // you might choose to exit the process here: process.exit(1);
-}
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'); // Crucial: Replace escaped newline characters with actual newlines
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 
+    if (!projectId || !privateKey || !clientEmail) {
+        throw new Error('Missing essential Firebase environment variables (projectId, privateKey, clientEmail). Cannot initialize Firebase Admin SDK.');
+    }
+
+    // REVISED initialization config using only projectId, privateKey, and clientEmail (other client details are autodiscovered)
+    admin.initializeApp({
+        credential: admin.credential.cert({
+            projectId: projectId,
+            privateKey: privateKey,
+            clientEmail: clientEmail
+        })
+    });
+    console.log('Firebase Admin SDK initialized successfully (using environment variables).');
+} catch (error: any) {
+    console.error('ERROR: Failed to initialize Firebase Admin SDK (using environment variables):', error.message);
+    // Depending on severity, you might want to exit the process or log more robustly
+    // process.exit(1);
+}
 
 // --- CORS Configuration ---
 const allowedOrigins: string[] = [
@@ -57,7 +62,7 @@ app.use(compression());
 
 // This is the correct, robust body parser configuration.
 app.use(bodyParser.text({ type: '*/*' }));
-app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.urlencoded({ extended: true }));
 
 app.use('/', mainRoutes);
 

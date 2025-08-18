@@ -3,8 +3,7 @@
 .env.local
 .env
 .env.local
-.env
-.env.*
+
 
 # Node.js
 node_modules/
