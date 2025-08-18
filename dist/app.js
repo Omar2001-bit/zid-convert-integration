@@ -41,32 +41,47 @@ const app = (0, express_1.default)();
 try {
     const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (!serviceAccountKey) {
-        throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK cannot be initialized.');
+        throw new Error('CRITICAL: FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK cannot be initialized.');
     }
     // REVERSED: Attempt to parse as JSON - Most reliable Firebase setup
     let parsedServiceAccount;
     try {
         parsedServiceAccount = JSON.parse(serviceAccountKey);
-        console.log('DEBUG: Parsed FIREBASE_SERVICE_ACCOUNT_KEY:', Object.keys(parsedServiceAccount)); // Print the keys
+        console.log('DEBUG: Parsed FIREBASE_SERVICE_ACCOUNT_KEY. Keys:', Object.keys(parsedServiceAccount)); // Print the keys
     }
     catch (parseError) {
         console.error('ERROR: Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY as JSON:', parseError.message);
-        throw new Error('Invalid FIREBASE_SERVICE_ACCOUNT_KEY JSON format.');
+        throw new Error('CRITICAL: Invalid FIREBASE_SERVICE_ACCOUNT_KEY JSON format. Cannot initialize Firebase Admin SDK.');
     }
-    // Now using the parsed service account to log it!
-    if (parsedServiceAccount && parsedServiceAccount.private_key) {
-        const newlifiedPrivateKey = parsedServiceAccount.private_key.replace(/\\n/g, '\n');
-        admin.initializeApp({
-            credential: admin.credential.cert(Object.assign(Object.assign({}, parsedServiceAccount), { private_key: newlifiedPrivateKey })),
-        });
-        console.log('Firebase Admin SDK initialized successfully using environment json for', admin.apps.length);
+    if (!parsedServiceAccount) {
+        throw new Error('CRITICAL: FIREBASE_SERVICE_ACCOUNT_KEY parsed as null/undefined. Cannot initialize Firebase Admin SDK.');
     }
-    else {
-        throw new Error('Service account should include also a private_key string at least for this credential process.  \nService account has only, if defined: private_key field presence ' + (parsedServiceAccount && parsedServiceAccount.private_key));
+    // Now, check for required properties within JSON service account 
+    if (!(parsedServiceAccount.project_id && parsedServiceAccount.private_key && parsedServiceAccount.client_email)) { // Check JSON object properties
+        const missingProps = [];
+        if (!parsedServiceAccount.project_id)
+            missingProps.push("project_id");
+        if (!parsedServiceAccount.private_key)
+            missingProps.push("private_key");
+        if (!parsedServiceAccount.client_email)
+            missingProps.push("client_email");
+        throw new Error(`CRITICAL: Missing essential properties in FIREBASE_SERVICE_ACCOUNT_KEY: ${missingProps.join(', ')}. Firebase Admin SDK cannot be initialized.`);
     }
+    const newlifiedPrivateKey = parsedServiceAccount.private_key.replace(/\\n/g, '\n'); // Safely replace literal \n with newlines
+    // REVISED init with simple structure in certificate
+    admin.initializeApp({
+        credential: admin.credential.cert({
+            projectId: parsedServiceAccount.project_id,
+            privateKey: newlifiedPrivateKey,
+            clientEmail: parsedServiceAccount.client_email // Minimum to correctly init FireBase to code!
+        })
+    });
+    console.log('Firebase Admin SDK initialized successfully (using FIREBASE_SERVICE_ACCOUNT_KEY). Admin Apps Len:', admin.apps.length);
 }
 catch (error) {
     console.error('ERROR: Failed to initialize Firebase Admin SDK using FIREBASE_SERVICE_ACCOUNT_KEY:', error.message);
+    // Depending on severity, you might want to exit the process or log more robustly
+    // process.exit(1); // Be cautious before process exit, use just test scenario is really high error level setup
 }
 // --- CORS Configuration ---
 const allowedOrigins = [
