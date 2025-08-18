@@ -12,30 +12,36 @@ dotenv.config();
 
 const app = express();
 
-// MODIFIED: Initialize Firebase Admin SDK using individual environment variables
+// MODIFIED: Initialize Firebase Admin SDK - Back to JSON env variable approach for stability, added logging
 try {
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'); // Crucial: Replace escaped newline characters with actual newlines
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-
-    if (!projectId || !privateKey || !clientEmail) {
-        throw new Error('Missing essential Firebase environment variables (projectId, privateKey, clientEmail). Cannot initialize Firebase Admin SDK.');
+    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    if (!serviceAccountKey) {
+        throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK cannot be initialized.');
     }
-
-    // REVISED initialization config using only projectId, privateKey, and clientEmail
-    admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId: projectId,
-            privateKey: privateKey,
-            clientEmail: clientEmail
-        })
-    });
-    console.log('Firebase Admin SDK initialized successfully (using projectId, privateKey, and clientEmail).');
+    // REVERSED: Attempt to parse as JSON - Most reliable Firebase setup
+    let parsedServiceAccount;
+    try {
+        parsedServiceAccount = JSON.parse(serviceAccountKey);
+        console.log('DEBUG: Parsed FIREBASE_SERVICE_ACCOUNT_KEY:', Object.keys(parsedServiceAccount)); // Print the keys
+    } catch (parseError: any) {
+        console.error('ERROR: Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY as JSON:', parseError.message);
+        throw new Error('Invalid FIREBASE_SERVICE_ACCOUNT_KEY JSON format.');
+    }
+  // Now using the parsed service account to log it!
+    if(parsedServiceAccount && parsedServiceAccount.private_key){
+        const newlifiedPrivateKey = parsedServiceAccount.private_key.replace(/\\n/g, '\n');
+        admin.initializeApp({
+            credential: admin.credential.cert({...parsedServiceAccount,  private_key: newlifiedPrivateKey}),
+          });
+        
+    console.log('Firebase Admin SDK initialized successfully using environment json for', admin.apps.length);
+    } else {
+      throw new Error('Service account should include also a private_key string at least for this credential process.  \nService account has only, if defined: private_key field presence '+(parsedServiceAccount && parsedServiceAccount.private_key))
+    }
 } catch (error: any) {
-    console.error('ERROR: Failed to initialize Firebase Admin SDK (using projectId, privateKey, clientEmail):', error.message);
-    // Depending on severity, you might want to exit the process or log more robustly
-    // process.exit(1);
-}
+    console.error('ERROR: Failed to initialize Firebase Admin SDK using FIREBASE_SERVICE_ACCOUNT_KEY:', error.message);
+
+  }
 
 // --- CORS Configuration ---
 const allowedOrigins: string[] = [
