@@ -6,10 +6,31 @@ import compression from 'compression';
 import bodyParser from 'body-parser';
 import dotenv from 'dotenv';
 import mainRoutes from './routes';
+import * as admin from 'firebase-admin'; // Added: Import firebase-admin
 
 dotenv.config();
 
 const app = express();
+
+// Added: Initialize Firebase Admin SDK
+try {
+  const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  if (!serviceAccountKey) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK cannot be initialized.');
+  }
+  // Attempt to parse the service account key JSON string
+  const parsedServiceAccount = JSON.parse(serviceAccountKey);
+  
+  admin.initializeApp({
+    credential: admin.credential.cert(parsedServiceAccount)
+  });
+  console.log('Firebase Admin SDK initialized successfully.');
+} catch (error) {
+  console.error('ERROR: Failed to initialize Firebase Admin SDK:', error instanceof Error ? error.message : error);
+  // Depending on the criticality for the application to function,
+  // you might choose to exit the process here: process.exit(1);
+}
+
 
 // --- CORS Configuration ---
 const allowedOrigins: string[] = [

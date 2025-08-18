@@ -1,11 +1,39 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.zidAuthCallbackController = void 0;
 const zid_service_1 = require("../../../services/zid-service");
 // Updated import: Removed ConvertTrackPayload as it's no longer used, kept modern interfaces
 const convert_service_1 = require("../../../services/convert-service");
+// Original import for in-memory store fallback
 const convertContextController_1 = require("../../api/convertContextController");
+// Added: Import Firestore service functions (these are still needed directly here as they perform the actual DB calls)
+const firestore_service_1 = require("../../../services/firestore-service");
 const currency_service_1 = require("../../../services/currency-service");
+const admin = __importStar(require("firebase-admin")); // Added: Import admin to handle Firestore Timestamps
+// Removed: interface BucketingEntry as it's replaced by NormalizedBucketingInfo's structure for bucketing items
 const TARGET_REPORTING_CURRENCY = 'SAR';
 const zidAuthCallbackController = async (req, res) => {
     var _a, _b, _c;
@@ -74,41 +102,92 @@ const zidAuthCallbackController = async (req, res) => {
                                 console.warn(`${orderLogPrefix} Zid Customer ID missing. Skipping Convert events.`);
                                 continue;
                             }
-                            // Re-added declarations for experienceIdsToUse and variationIdsToUse
-                            let experienceIdsToUse = [];
-                            let variationIdsToUse = [];
+                            // Removed: experienceIdsToUse and variationIdsToUse declarations as they are now handled by normalization
                             let bucketingEventsForConvert = [];
                             let attributionSource = "Initial: No Stored Context";
                             let pagePathForLog = 'Unknown';
                             // ==========================================================================================
-                            // === DEFINITIVE FIX: Revert to synchronous calls for in-memory store ====================
+                            // === MODIFIED: Prioritize Firestore lookup, then fallback to in-memory, normalizing data ===
                             // ==========================================================================================
                             let storedContextData = undefined;
-                            storedContextData = (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
-                            if (storedContextData && storedContextData.convertBucketing && storedContextData.convertBucketing.length > 0) {
-                                attributionSource = "Found in Store (by zidCustomerId)";
-                                if (storedContextData.zidPagePath)
-                                    pagePathForLog = storedContextData.zidPagePath;
+                            // 1. Try fetching from Firestore by zidCustomerId
+                            const firestoreDataByCustomerId = await (0, firestore_service_1.getContextByZidCustomerId)(zidCustomerId);
+                            if (firestoreDataByCustomerId) {
+                                attributionSource = 'Firestore (by zidCustomerId)';
+                                storedContextData = {
+                                    convertVisitorId: firestoreDataByCustomerId.convertVisitorId,
+                                    zidCustomerId: firestoreDataByCustomerId.zidCustomerId,
+                                    convertBucketing: firestoreDataByCustomerId.convertBucketing.map(b => ({
+                                        experimentId: String(b.experienceId),
+                                        variationId: String(b.variationId)
+                                    })),
+                                    timestamp: (firestoreDataByCustomerId.timestamp instanceof admin.firestore.Timestamp) ? firestoreDataByCustomerId.timestamp.toMillis() : firestoreDataByCustomerId.timestamp,
+                                    zidPagePath: firestoreDataByCustomerId.zidPagePath
+                                };
                             }
                             else {
                                 const orderContextKey = `orderctx_${zidOrder.id}`;
-                                console.log(`${orderLogPrefix} Context not found/empty via zidCustomerId. Attempting lookup by orderId key: ${orderContextKey}`);
-                                storedContextData = (0, convertContextController_1.getStoredClientContext)(orderContextKey);
-                                if (storedContextData && storedContextData.convertBucketing && storedContextData.convertBucketing.length > 0) {
-                                    attributionSource = "Found in Store (by orderId from purchase signal)";
-                                    pagePathForLog = storedContextData.zidPagePath || 'N/A (from order context)';
+                                console.log(`${orderLogPrefix} Context not found in Firestore via zidCustomerId. Attempting lookup by orderId key: ${orderContextKey} in Firestore.`);
+                                // 2. If not found, try fetching from Firestore by specific order ID key
+                                const firestoreDataByOrderId = await (0, firestore_service_1.getContextByConvertVisitorId)(orderContextKey);
+                                if (firestoreDataByOrderId) {
+                                    attributionSource = 'Firestore (by orderId context key)';
+                                    storedContextData = {
+                                        convertVisitorId: firestoreDataByOrderId.convertVisitorId,
+                                        zidCustomerId: firestoreDataByOrderId.zidCustomerId,
+                                        convertBucketing: firestoreDataByOrderId.convertBucketing.map(b => ({
+                                            experimentId: String(b.experienceId),
+                                            variationId: String(b.variationId)
+                                        })),
+                                        timestamp: (firestoreDataByOrderId.timestamp instanceof admin.firestore.Timestamp) ? firestoreDataByOrderId.timestamp.toMillis() : firestoreDataByOrderId.timestamp,
+                                        zidPagePath: firestoreDataByOrderId.zidPagePath
+                                    };
                                 }
                                 else {
-                                    storedContextData = undefined;
-                                    attributionSource = "No Stored Context (tried zidCustomerId & orderId)";
+                                    console.log(`${orderLogPrefix} Context not found in Firestore via orderId. Falling back to in-memory store.`);
+                                    // 3. Fallback to in-memory store by zidCustomerId
+                                    const inMemoryDataByCustomerId = (0, convertContextController_1.getStoredClientContext)(zidCustomerId);
+                                    if (inMemoryDataByCustomerId) {
+                                        attributionSource = "In-Memory (by zidCustomerId)";
+                                        storedContextData = {
+                                            convertVisitorId: inMemoryDataByCustomerId.convertVisitorId,
+                                            zidCustomerId: undefined,
+                                            convertBucketing: inMemoryDataByCustomerId.convertBucketing.map(b => ({
+                                                experimentId: b.experimentId,
+                                                variationId: b.variationId
+                                            })),
+                                            timestamp: inMemoryDataByCustomerId.timestamp,
+                                            zidPagePath: inMemoryDataByCustomerId.zidPagePath
+                                        };
+                                    }
+                                    else {
+                                        // 4. Fallback to in-memory store by orderId key
+                                        const inMemoryDataByOrderId = (0, convertContextController_1.getStoredClientContext)(orderContextKey);
+                                        if (inMemoryDataByOrderId) {
+                                            attributionSource = "In-Memory (by orderId from purchase signal)";
+                                            storedContextData = {
+                                                convertVisitorId: inMemoryDataByOrderId.convertVisitorId,
+                                                zidCustomerId: undefined,
+                                                convertBucketing: inMemoryDataByOrderId.convertBucketing.map(b => ({
+                                                    experimentId: b.experimentId,
+                                                    variationId: b.variationId
+                                                })),
+                                                timestamp: inMemoryDataByOrderId.timestamp,
+                                                zidPagePath: inMemoryDataByOrderId.zidPagePath
+                                            };
+                                        }
+                                        else {
+                                            storedContextData = undefined;
+                                            attributionSource = "No Stored Context (tried all methods)";
+                                        }
+                                    }
                                 }
                             }
                             // ==========================================================================================
                             if (storedContextData && storedContextData.convertBucketing && Array.isArray(storedContextData.convertBucketing) && storedContextData.convertBucketing.length > 0) {
                                 console.log(`${orderLogPrefix} DEBUG: Using context from ${attributionSource}. Raw storedContext.convertBucketing:`, JSON.stringify(storedContextData.convertBucketing));
-                                const validBuckets = storedContextData.convertBucketing.filter(
-                                // Simplified filtering logic to prevent TS errors due to function expression scope
-                                (b) => {
+                                // Simplified: Direct usage of storedContextData.convertBucketing now that it's normalized
+                                const validBuckets = storedContextData.convertBucketing.filter((b) => {
                                     const hasExpId = typeof b.experimentId === 'string' && b.experimentId.trim().length > 0;
                                     const hasVarId = typeof b.variationId === 'string' && b.variationId.trim().length > 0;
                                     return hasExpId && hasVarId;
@@ -116,23 +195,16 @@ const zidAuthCallbackController = async (req, res) => {
                                 console.log(`${orderLogPrefix} DEBUG: validBuckets array length after filter: ${validBuckets.length}`);
                                 console.log(`${orderLogPrefix} DEBUG: validBuckets content after filter:`, JSON.stringify(validBuckets));
                                 if (validBuckets.length > 0) {
-                                    console.log(`${orderLogPrefix} DEBUG: Entering .map() for experienceIdsToUse. validBuckets about to be mapped:`, JSON.stringify(validBuckets));
-                                    experienceIdsToUse = validBuckets.map(
-                                    // Simplified mapping logic
-                                    (vb) => vb.experimentId ? String(vb.experimentId) : null).filter(function (id) { return id !== null && id !== undefined; });
-                                    console.log(`${orderLogPrefix} DEBUG: Entering .map() for variationIdsToUse. validBuckets about to be mapped:`, JSON.stringify(validBuckets));
-                                    variationIdsToUse = validBuckets.map(
-                                    // Simplified mapping logic
-                                    (vb) => vb.variationId ? String(vb.variationId) : null).filter(function (id) { return id !== null && id !== undefined; });
-                                    console.log(`${orderLogPrefix} Using ExpIDs from ${attributionSource} (Page: ${pagePathForLog}): [${experienceIdsToUse.join(', ')}] and VarIDs: [${variationIdsToUse.join(', ')}]`);
-                                    // Populate bucketingEventsForConvert for the new API call
-                                    bucketingEventsForConvert = validBuckets.map(b => ({
+                                    // Removed: experienceIdsToUse and variationIdsToUse mapping as they are no longer needed
+                                    // The BucketingEventData expects strings, which are now guaranteed by NormalizedBucketingInfo
+                                    bucketingEventsForConvert = validBuckets.map((b) => ({
                                         eventType: 'bucketing',
                                         data: {
                                             experienceId: b.experimentId,
-                                            variationId: b.variationId
+                                            variationId: b.variationId // These are now strings from normalization
                                         }
                                     }));
+                                    console.log(`${orderLogPrefix} Using ExpIDs from ${attributionSource} (Page: ${pagePathForLog}): [${validBuckets.map(b => b.experimentId).join(', ')}] and VarIDs: [${validBuckets.map(b => b.variationId).join(', ')}]`);
                                 }
                                 else {
                                     attributionSource = attributionSource.includes("Filtered") ? attributionSource : "Stored Context but Filtered to No Valid Buckets";

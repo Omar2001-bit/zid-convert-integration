@@ -2,6 +2,11 @@
 import { Request, Response } from 'express';
 // Updated import: Removed ConvertTrackPayload as it's no longer used, kept modern interfaces
 import { ConvertApiService, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../services/convert-service';
+// Added: Import Firestore service functions
+import { saveContext } from '../../services/firestore-service';
+import * as admin from 'firebase-admin'; // Added: Import admin to use admin.firestore.FieldValue
+// Added: Import StoredBucketingInfo and StoredConvertBucketingEntry from the new global types file
+import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry } from '../../types/index';
 
 interface ConvertClientContextPayload {
     zidPagePath: string;
@@ -10,17 +15,19 @@ interface ConvertClientContextPayload {
     zidCustomerId?: string | null;
 }
 
-// This interface is correct for the in-memory solution.
+// This interface is correct for the in-memory solution. PRESERVED AS REQUESTED.
 export interface StoredBucketingInfo {
     convertVisitorId: string;
     convertBucketing: Array<{ experimentId: string; variationId: string; }>; // Uses 'experimentId'
     timestamp: number;
     zidPagePath?: string;
+    // Note: zidCustomerId is implicitly handled as a key in clientContextStore, not a property of this interface.
+    // For Firestore, it will be an explicit property.
 }
 
 const clientContextStore: Record<string, StoredBucketingInfo> = {};
 
-// The function is now synchronous again as it only reads from a local object.
+// PRESERVED: The function remains synchronous and only reads from the local in-memory object.
 export function getStoredClientContext(key: string): StoredBucketingInfo | undefined {
     console.log(`DEBUG: getStoredClientContext called with key: "${key}" (type: ${typeof key})`);
     if (!key) {
@@ -71,25 +78,43 @@ export const captureConvertContextController = async (req: Request, res: Respons
                 : [];
 
         if (bucketingToStore.length === 0) {
-            return res.status(200).json({ message: "Context received, but no valid bucketing data to store." });
+            console.log("Context received, but no valid bucketing data to store. Proceeding to save visitor ID only (if valid).");
         }
 
-        const infoToStore: StoredBucketingInfo = {
+        // --- PRESERVED: Original in-memory store logic ---
+        const infoToStoreInMemory: StoredBucketingInfo = {
             convertVisitorId: convertVisitorId,
             convertBucketing: bucketingToStore,
-            timestamp: Date.now(),
+            timestamp: Date.now(), // Still uses number for in-memory store
             zidPagePath: zidPagePath
         };
         
-        // --- Reverted to only storing in the local in-memory object ---
         if (zidCustomerId) {
-            clientContextStore[zidCustomerId] = infoToStore;
-            console.log(`Stored/Updated context for zidCustomerId: '${zidCustomerId}'.`);
+            clientContextStore[zidCustomerId] = infoToStoreInMemory;
+            console.log(`Stored/Updated IN-MEMORY context for zidCustomerId: '${zidCustomerId}'.`);
         }
-        clientContextStore[convertVisitorId] = infoToStore;
-        console.log(`Stored/Updated context for convertVisitorId: '${convertVisitorId}'.`);
+        clientContextStore[convertVisitorId] = infoToStoreInMemory;
+        console.log(`Stored/Updated IN-MEMORY context for convertVisitorId: '${convertVisitorId}'.`);
+        console.log(`Current IN-MEMORY store keys after update: [${Object.keys(clientContextStore).join(', ')}]`);
+        // --- END PRESERVED ---
 
-        console.log(`Current store keys after update: [${Object.keys(clientContextStore).join(', ')}]`);
+        // --- ADDED: Firestore persistence logic ---
+        // Prepare data for Firestore, aligning with src/types/index.d.ts FirestoreStoredBucketingInfo
+        const infoToStoreForFirestore: FirestoreStoredBucketingInfo = { // Changed type annotation
+            convertVisitorId: convertVisitorId,
+            zidCustomerId: zidCustomerId ?? undefined, // FIX: Convert null to undefined for type compatibility
+            convertBucketing: bucketingToStore.map((b: { experimentId: string; variationId: string; }): StoredConvertBucketingEntry => ({ // Explicitly type map callback
+                experienceId: parseInt(b.experimentId), 
+                variationId: parseInt(b.variationId)    
+            })),
+            timestamp: admin.firestore.FieldValue.serverTimestamp(), // Use Firestore server timestamp
+            zidPagePath: zidPagePath
+        };
+        
+        await saveContext(infoToStoreForFirestore);
+        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' and zidCustomerId: '${zidCustomerId || 'N/A'}'.`);
+        // --- END ADDED ---
+
         res.status(200).json({ message: "Convert context received and stored successfully." });
 
     } catch (error) {
@@ -124,13 +149,30 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
             );
 
             if (validExperimentsForOrder.length > 0) {
-                // Reverted to only store in the local in-memory object
+                // --- PRESERVED: Original in-memory store logic ---
                 clientContextStore[orderContextKey] = {
                     convertVisitorId: payload.convertVisitorId,
                     convertBucketing: validExperimentsForOrder,
                     timestamp: Date.now(),
                 };
-                console.log(`Purchase signal: Stored experiment context for Zid Order ID '${payload.zidOrderId}'.`);
+                console.log(`Purchase signal: Stored IN-MEMORY experiment context for Zid Order ID '${payload.zidOrderId}'.`);
+                // --- END PRESERVED ---
+
+                // --- ADDED: Firestore persistence logic ---
+                const infoToStoreForFirestore: FirestoreStoredBucketingInfo = { // Changed type annotation
+                    convertVisitorId: payload.convertVisitorId,
+                    // zidCustomerId might not be available from this signal, so it can be undefined
+                    convertBucketing: validExperimentsForOrder.map((b: { experimentId: string; variationId: string; }): StoredConvertBucketingEntry => ({ // Explicitly type map callback
+                        experienceId: parseInt(b.experimentId),
+                        variationId: parseInt(b.variationId)
+                    })),
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    zidPagePath: undefined // Page path is not typically part of this signal
+                };
+                await saveContext(infoToStoreForFirestore);
+                console.log(`Purchase signal: Stored FIRESTORE experiment context for convertVisitorId '${payload.convertVisitorId}' for Zid Order ID '${payload.zidOrderId}'.`);
+                // --- END ADDED ---
+
             } else {
                  console.log(`Purchase signal: Received Zid Order ID '${payload.zidOrderId}' but experiments array was empty or invalid after filtering.`);
             }

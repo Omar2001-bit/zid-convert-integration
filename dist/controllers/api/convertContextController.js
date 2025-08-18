@@ -1,10 +1,36 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ADDITIVE_DIAGNOSTIC_NAMED_EXPORT = exports.handlePurchaseSignalController = exports.captureConvertContextController = exports.getStoredClientContext = void 0;
 // Updated import: Removed ConvertTrackPayload as it's no longer used, kept modern interfaces
 const convert_service_1 = require("../../services/convert-service");
+// Added: Import Firestore service functions
+const firestore_service_1 = require("../../services/firestore-service");
+const admin = __importStar(require("firebase-admin")); // Added: Import admin to use admin.firestore.FieldValue
 const clientContextStore = {};
-// The function is now synchronous again as it only reads from a local object.
+// PRESERVED: The function remains synchronous and only reads from the local in-memory object.
 function getStoredClientContext(key) {
     console.log(`DEBUG: getStoredClientContext called with key: "${key}" (type: ${typeof key})`);
     if (!key) {
@@ -49,22 +75,38 @@ const captureConvertContextController = async (req, res) => {
             }))
             : [];
         if (bucketingToStore.length === 0) {
-            return res.status(200).json({ message: "Context received, but no valid bucketing data to store." });
+            console.log("Context received, but no valid bucketing data to store. Proceeding to save visitor ID only (if valid).");
         }
-        const infoToStore = {
+        // --- PRESERVED: Original in-memory store logic ---
+        const infoToStoreInMemory = {
             convertVisitorId: convertVisitorId,
             convertBucketing: bucketingToStore,
             timestamp: Date.now(),
             zidPagePath: zidPagePath
         };
-        // --- Reverted to only storing in the local in-memory object ---
         if (zidCustomerId) {
-            clientContextStore[zidCustomerId] = infoToStore;
-            console.log(`Stored/Updated context for zidCustomerId: '${zidCustomerId}'.`);
+            clientContextStore[zidCustomerId] = infoToStoreInMemory;
+            console.log(`Stored/Updated IN-MEMORY context for zidCustomerId: '${zidCustomerId}'.`);
         }
-        clientContextStore[convertVisitorId] = infoToStore;
-        console.log(`Stored/Updated context for convertVisitorId: '${convertVisitorId}'.`);
-        console.log(`Current store keys after update: [${Object.keys(clientContextStore).join(', ')}]`);
+        clientContextStore[convertVisitorId] = infoToStoreInMemory;
+        console.log(`Stored/Updated IN-MEMORY context for convertVisitorId: '${convertVisitorId}'.`);
+        console.log(`Current IN-MEMORY store keys after update: [${Object.keys(clientContextStore).join(', ')}]`);
+        // --- END PRESERVED ---
+        // --- ADDED: Firestore persistence logic ---
+        // Prepare data for Firestore, aligning with src/types/index.d.ts FirestoreStoredBucketingInfo
+        const infoToStoreForFirestore = {
+            convertVisitorId: convertVisitorId,
+            zidCustomerId: zidCustomerId !== null && zidCustomerId !== void 0 ? zidCustomerId : undefined,
+            convertBucketing: bucketingToStore.map((b) => ({
+                experienceId: parseInt(b.experimentId),
+                variationId: parseInt(b.variationId)
+            })),
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            zidPagePath: zidPagePath
+        };
+        await (0, firestore_service_1.saveContext)(infoToStoreForFirestore);
+        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' and zidCustomerId: '${zidCustomerId || 'N/A'}'.`);
+        // --- END ADDED ---
         res.status(200).json({ message: "Convert context received and stored successfully." });
     }
     catch (error) {
@@ -86,13 +128,28 @@ const handlePurchaseSignalController = async (req, res) => {
             const orderContextKey = `orderctx_${payload.zidOrderId}`;
             const validExperimentsForOrder = payload.experiments.filter((b) => !!(b && b.experimentId && b.variationId));
             if (validExperimentsForOrder.length > 0) {
-                // Reverted to only store in the local in-memory object
+                // --- PRESERVED: Original in-memory store logic ---
                 clientContextStore[orderContextKey] = {
                     convertVisitorId: payload.convertVisitorId,
                     convertBucketing: validExperimentsForOrder,
                     timestamp: Date.now(),
                 };
-                console.log(`Purchase signal: Stored experiment context for Zid Order ID '${payload.zidOrderId}'.`);
+                console.log(`Purchase signal: Stored IN-MEMORY experiment context for Zid Order ID '${payload.zidOrderId}'.`);
+                // --- END PRESERVED ---
+                // --- ADDED: Firestore persistence logic ---
+                const infoToStoreForFirestore = {
+                    convertVisitorId: payload.convertVisitorId,
+                    // zidCustomerId might not be available from this signal, so it can be undefined
+                    convertBucketing: validExperimentsForOrder.map((b) => ({
+                        experienceId: parseInt(b.experimentId),
+                        variationId: parseInt(b.variationId)
+                    })),
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    zidPagePath: undefined // Page path is not typically part of this signal
+                };
+                await (0, firestore_service_1.saveContext)(infoToStoreForFirestore);
+                console.log(`Purchase signal: Stored FIRESTORE experiment context for convertVisitorId '${payload.convertVisitorId}' for Zid Order ID '${payload.zidOrderId}'.`);
+                // --- END ADDED ---
             }
             else {
                 console.log(`Purchase signal: Received Zid Order ID '${payload.zidOrderId}' but experiments array was empty or invalid after filtering.`);
