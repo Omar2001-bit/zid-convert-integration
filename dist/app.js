@@ -34,55 +34,37 @@ const compression_1 = __importDefault(require("compression"));
 const body_parser_1 = __importDefault(require("body-parser"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const routes_1 = __importDefault(require("./routes"));
-const admin = __importStar(require("firebase-admin")); // Added: Import firebase-admin
+const admin = __importStar(require("firebase-admin"));
+const fs = __importStar(require("fs")); // <-- EDITED: Added Node.js file system module
 dotenv_1.default.config();
 const app = (0, express_1.default)();
-// MODIFIED: Initialize Firebase Admin SDK - Back to JSON env variable approach for stability, added logging
+// --- EDITED: Firebase Admin SDK Initialization to use Render Secret File ---
 try {
-    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    if (!serviceAccountKey) {
-        throw new Error('CRITICAL: FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set. Firebase Admin SDK cannot be initialized.');
+    // 1. Render automatically creates this env var based on your Secret File's name.
+    // Filename: firebase_credentials.json -> Env Var: FIREBASE_CREDENTIALS_JSON_PATH
+    const serviceAccountPath = process.env.FIREBASE_CREDENTIALS_JSON_PATH;
+    if (!serviceAccountPath) {
+        throw new Error('CRITICAL: FIREBASE_CREDENTIALS_JSON_PATH environment variable not set. Ensure the Secret File is configured correctly in Render.');
     }
-    // REVERSED: Attempt to parse as JSON - Most reliable Firebase setup
-    let parsedServiceAccount;
-    try {
-        parsedServiceAccount = JSON.parse(serviceAccountKey);
-        console.log('DEBUG: Parsed FIREBASE_SERVICE_ACCOUNT_KEY. Keys:', Object.keys(parsedServiceAccount)); // Print the keys
+    // 2. Check if the file exists at the provided path.
+    if (!fs.existsSync(serviceAccountPath)) {
+        throw new Error(`CRITICAL: Firebase credentials file not found at path: ${serviceAccountPath}`);
     }
-    catch (parseError) {
-        console.error('ERROR: Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY as JSON:', parseError.message);
-        throw new Error('CRITICAL: Invalid FIREBASE_SERVICE_ACCOUNT_KEY JSON format. Cannot initialize Firebase Admin SDK.');
-    }
-    if (!parsedServiceAccount) {
-        throw new Error('CRITICAL: FIREBASE_SERVICE_ACCOUNT_KEY parsed as null/undefined. Cannot initialize Firebase Admin SDK.');
-    }
-    // Now, check for required properties within JSON service account 
-    if (!(parsedServiceAccount.project_id && parsedServiceAccount.private_key && parsedServiceAccount.client_email)) { // Check JSON object properties
-        const missingProps = [];
-        if (!parsedServiceAccount.project_id)
-            missingProps.push("project_id");
-        if (!parsedServiceAccount.private_key)
-            missingProps.push("private_key");
-        if (!parsedServiceAccount.client_email)
-            missingProps.push("client_email");
-        throw new Error(`CRITICAL: Missing essential properties in FIREBASE_SERVICE_ACCOUNT_KEY: ${missingProps.join(', ')}. Firebase Admin SDK cannot be initialized.`);
-    }
-    const newlifiedPrivateKey = parsedServiceAccount.private_key.replace(/\\n/g, '\n'); // Safely replace literal \n with newlines
-    // REVISED init with simple structure in certificate
+    // 3. Read the file's content directly. No need to handle '\n' escapes.
+    const serviceAccountString = fs.readFileSync(serviceAccountPath, 'utf8');
+    // 4. Parse the file content into a JSON object.
+    const serviceAccount = JSON.parse(serviceAccountString);
+    // 5. Initialize the SDK with the entire service account object.
     admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId: parsedServiceAccount.project_id,
-            privateKey: newlifiedPrivateKey,
-            clientEmail: parsedServiceAccount.client_email // Minimum to correctly init FireBase to code!
-        })
+        credential: admin.credential.cert(serviceAccount)
     });
-    console.log('Firebase Admin SDK initialized successfully (using FIREBASE_SERVICE_ACCOUNT_KEY). Admin Apps Len:', admin.apps.length);
+    console.log(`Firebase Admin SDK initialized successfully from Secret File for project: ${serviceAccount.project_id}.`);
 }
 catch (error) {
-    console.error('ERROR: Failed to initialize Firebase Admin SDK using FIREBASE_SERVICE_ACCOUNT_KEY:', error.message);
-    // Depending on severity, you might want to exit the process or log more robustly
-    // process.exit(1); // Be cautious before process exit, use just test scenario is really high error level setup
+    console.error('CRITICAL ERROR: Failed to initialize Firebase Admin SDK from Secret File.', error);
+    process.exit(1); // Exit because the application cannot function without Firebase.
 }
+// --- End of Firebase Initialization ---
 // --- CORS Configuration ---
 const allowedOrigins = [
     'https://regal-honey.com',
@@ -102,7 +84,6 @@ app.use((0, cors_1.default)(corsOptions));
 app.options('*', (0, cors_1.default)(corsOptions));
 app.use((0, helmet_1.default)());
 app.use((0, compression_1.default)());
-// This is the correct, robust body parser configuration.
 app.use(body_parser_1.default.text({ type: '*/*' }));
 app.use(body_parser_1.default.urlencoded({ extended: true }));
 app.use('/', routes_1.default);
