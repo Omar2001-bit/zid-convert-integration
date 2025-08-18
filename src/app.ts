@@ -16,21 +16,23 @@ const app = express();
 try {
     const projectId = process.env.FIREBASE_PROJECT_ID;
     const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'); // Crucial: Replace escaped newline characters with actual newlines
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 
-    if (!projectId || !privateKey) {
-        throw new Error('Missing essential Firebase environment variables (projectId or privateKey). Cannot initialize Firebase Admin SDK.');
+    if (!projectId || !privateKey || !clientEmail) {
+        throw new Error('Missing essential Firebase environment variables (projectId, privateKey, clientEmail). Cannot initialize Firebase Admin SDK.');
     }
 
-    // REVISED initialization config to use only projectId and privateKey
+    // REVISED initialization config using only projectId, privateKey, and clientEmail
     admin.initializeApp({
         credential: admin.credential.cert({
             projectId: projectId,
-            privateKey: privateKey
+            privateKey: privateKey,
+            clientEmail: clientEmail
         })
     });
-    console.log('Firebase Admin SDK initialized successfully (using only projectId and privateKey environment variables).');
+    console.log('Firebase Admin SDK initialized successfully (using projectId, privateKey, and clientEmail).');
 } catch (error: any) {
-    console.error('ERROR: Failed to initialize Firebase Admin SDK (using projectId and privateKey):', error.message);
+    console.error('ERROR: Failed to initialize Firebase Admin SDK (using projectId, privateKey, clientEmail):', error.message);
     // Depending on severity, you might want to exit the process or log more robustly
     // process.exit(1);
 }
