@@ -7,39 +7,36 @@ import bodyParser from 'body-parser';
 import dotenv from 'dotenv';
 import mainRoutes from './routes';
 import * as admin from 'firebase-admin';
-import * as fs from 'fs'; // <-- This import is correct and still needed
+import * as fs from 'fs';
 
 dotenv.config();
 
 const app = express();
 
-// --- EDITED: Final Firebase Initialization using direct file path as per Render Support ---
+// --- FINAL EDITED CODE: Fix Private Key Formatting ---
 try {
-    // 1. Render Support confirmed that the Secret File is always available at this fixed path.
-    // We no longer look for an environment variable.
+    // 1. Read the secret file from the fixed path.
     const serviceAccountPath = '/etc/secrets/firebase_credentials.json';
-
-    // 2. Check if the file exists at the provided path.
     if (!fs.existsSync(serviceAccountPath)) {
-        throw new Error(`CRITICAL: Firebase credentials file not found at path: ${serviceAccountPath}. Ensure the Secret File is correctly named 'firebase_credentials.json' in Render.`);
+        throw new Error(`CRITICAL: Firebase credentials file not found at path: ${serviceAccountPath}.`);
     }
-
-    // 3. Read the file's content.
     const serviceAccountString = fs.readFileSync(serviceAccountPath, 'utf8');
-
-    // 4. Parse the file content into a JSON object.
     const serviceAccount = JSON.parse(serviceAccountString);
+
+    // 2. THIS IS THE FIX: Manually replace the literal '\n' in the private key
+    // with actual newline characters. This corrects any copy-paste formatting errors.
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
     
-    // 5. Initialize the SDK with the entire service account object.
+    // 3. Initialize the SDK with the corrected service account object.
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
 
-    console.log(`Firebase Admin SDK initialized successfully from Secret File for project: ${serviceAccount.project_id}.`);
+    console.log(`Firebase Admin SDK initialized successfully! Project: ${serviceAccount.project_id}.`);
 
 } catch (error: any) {
-    console.error('CRITICAL ERROR: Failed to initialize Firebase Admin SDK from Secret File.', error);
-    process.exit(1); // Exit because the application cannot function without Firebase.
+    console.error('CRITICAL ERROR: Failed to initialize Firebase Admin SDK.', error);
+    process.exit(1);
 }
 // --- End of Firebase Initialization ---
 
