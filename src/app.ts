@@ -7,28 +7,24 @@ import bodyParser from 'body-parser';
 import dotenv from 'dotenv';
 import mainRoutes from './routes';
 import * as admin from 'firebase-admin';
-import * as fs from 'fs'; // <-- EDITED: Added Node.js file system module
+import * as fs from 'fs'; // <-- This import is correct and still needed
 
 dotenv.config();
 
 const app = express();
 
-// --- EDITED: Firebase Admin SDK Initialization to use Render Secret File ---
+// --- EDITED: Final Firebase Initialization using direct file path as per Render Support ---
 try {
-    // 1. Render automatically creates this env var based on your Secret File's name.
-    // Filename: firebase_credentials.json -> Env Var: FIREBASE_CREDENTIALS_JSON_PATH
-    const serviceAccountPath = process.env.FIREBASE_CREDENTIALS_JSON_PATH;
-
-    if (!serviceAccountPath) {
-        throw new Error('CRITICAL: FIREBASE_CREDENTIALS_JSON_PATH environment variable not set. Ensure the Secret File is configured correctly in Render.');
-    }
+    // 1. Render Support confirmed that the Secret File is always available at this fixed path.
+    // We no longer look for an environment variable.
+    const serviceAccountPath = '/etc/secrets/firebase_credentials.json';
 
     // 2. Check if the file exists at the provided path.
     if (!fs.existsSync(serviceAccountPath)) {
-        throw new Error(`CRITICAL: Firebase credentials file not found at path: ${serviceAccountPath}`);
+        throw new Error(`CRITICAL: Firebase credentials file not found at path: ${serviceAccountPath}. Ensure the Secret File is correctly named 'firebase_credentials.json' in Render.`);
     }
 
-    // 3. Read the file's content directly. No need to handle '\n' escapes.
+    // 3. Read the file's content.
     const serviceAccountString = fs.readFileSync(serviceAccountPath, 'utf8');
 
     // 4. Parse the file content into a JSON object.
