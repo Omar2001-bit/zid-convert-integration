@@ -78,7 +78,8 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                 attributionSource = 'Firestore (by zidCustomerId)';
                 storedContext = {
                     convertVisitorId: firestoreData.convertVisitorId,
-                    zidCustomerId: firestoreData.zidCustomerId,
+                    // --- FIX 1 of 2: Convert null to undefined to match the expected type ---
+                    zidCustomerId: firestoreData.zidCustomerId ?? undefined,
                     // Map StoredConvertBucketingEntry (numbers) to {experimentId: string, variationId: string}
                     convertBucketing: firestoreData.convertBucketing.map(b => ({
                         experimentId: String(b.experienceId),
@@ -98,7 +99,8 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                 attributionSource = 'Firestore (by orderId context key)';
                 storedContext = {
                     convertVisitorId: firestoreData.convertVisitorId,
-                    zidCustomerId: firestoreData.zidCustomerId,
+                    // --- FIX 2 of 2: Convert null to undefined to match the expected type ---
+                    zidCustomerId: firestoreData.zidCustomerId ?? undefined,
                     // Map StoredConvertBucketingEntry (numbers) to {experimentId: string, variationId: string}
                     convertBucketing: firestoreData.convertBucketing.map(b => ({
                         experimentId: String(b.experienceId),

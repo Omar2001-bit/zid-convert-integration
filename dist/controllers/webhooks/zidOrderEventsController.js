@@ -42,7 +42,7 @@ const TARGET_REPORTING_CURRENCY = 'SAR';
 //     quantity: number | string;
 // }
 const zidOrderEventsWebhookController = async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
     const providedToken = req.query.token;
     if (!secretToken || providedToken !== secretToken) {
@@ -86,7 +86,8 @@ const zidOrderEventsWebhookController = async (req, res) => {
                 attributionSource = 'Firestore (by zidCustomerId)';
                 storedContext = {
                     convertVisitorId: firestoreData.convertVisitorId,
-                    zidCustomerId: firestoreData.zidCustomerId,
+                    // --- FIX 1 of 2: Convert null to undefined to match the expected type ---
+                    zidCustomerId: (_d = firestoreData.zidCustomerId) !== null && _d !== void 0 ? _d : undefined,
                     // Map StoredConvertBucketingEntry (numbers) to {experimentId: string, variationId: string}
                     convertBucketing: firestoreData.convertBucketing.map(b => ({
                         experimentId: String(b.experienceId),
@@ -105,7 +106,8 @@ const zidOrderEventsWebhookController = async (req, res) => {
                 attributionSource = 'Firestore (by orderId context key)';
                 storedContext = {
                     convertVisitorId: firestoreData.convertVisitorId,
-                    zidCustomerId: firestoreData.zidCustomerId,
+                    // --- FIX 2 of 2: Convert null to undefined to match the expected type ---
+                    zidCustomerId: (_e = firestoreData.zidCustomerId) !== null && _e !== void 0 ? _e : undefined,
                     // Map StoredConvertBucketingEntry (numbers) to {experimentId: string, variationId: string}
                     convertBucketing: firestoreData.convertBucketing.map(b => ({
                         experimentId: String(b.experienceId),

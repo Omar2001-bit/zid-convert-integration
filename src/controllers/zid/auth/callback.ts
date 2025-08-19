@@ -107,7 +107,8 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 attributionSource = 'Firestore (by zidCustomerId)';
                                 storedContextData = {
                                     convertVisitorId: firestoreDataByCustomerId.convertVisitorId,
-                                    zidCustomerId: firestoreDataByCustomerId.zidCustomerId,
+                                    // --- FIX 1 of 2: Convert null to undefined to match the expected type ---
+                                    zidCustomerId: firestoreDataByCustomerId.zidCustomerId ?? undefined,
                                     convertBucketing: firestoreDataByCustomerId.convertBucketing.map(b => ({
                                         experimentId: String(b.experienceId),
                                         variationId: String(b.variationId)
@@ -125,7 +126,8 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                     attributionSource = 'Firestore (by orderId context key)';
                                     storedContextData = {
                                         convertVisitorId: firestoreDataByOrderId.convertVisitorId,
-                                        zidCustomerId: firestoreDataByOrderId.zidCustomerId,
+                                        // --- FIX 2 of 2: Convert null to undefined to match the expected type ---
+                                        zidCustomerId: firestoreDataByOrderId.zidCustomerId ?? undefined,
                                         convertBucketing: firestoreDataByOrderId.convertBucketing.map(b => ({
                                             experimentId: String(b.experienceId),
                                             variationId: String(b.variationId)

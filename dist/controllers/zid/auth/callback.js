@@ -36,7 +36,7 @@ const admin = __importStar(require("firebase-admin")); // Added: Import admin to
 // Removed: interface BucketingEntry as it's replaced by NormalizedBucketingInfo's structure for bucketing items
 const TARGET_REPORTING_CURRENCY = 'SAR';
 const zidAuthCallbackController = async (req, res) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     const code = req.query.code;
     if (!code) {
         console.error("ZidAuthCallback: Authorization code not provided.");
@@ -116,7 +116,8 @@ const zidAuthCallbackController = async (req, res) => {
                                 attributionSource = 'Firestore (by zidCustomerId)';
                                 storedContextData = {
                                     convertVisitorId: firestoreDataByCustomerId.convertVisitorId,
-                                    zidCustomerId: firestoreDataByCustomerId.zidCustomerId,
+                                    // --- FIX 1 of 2: Convert null to undefined to match the expected type ---
+                                    zidCustomerId: (_d = firestoreDataByCustomerId.zidCustomerId) !== null && _d !== void 0 ? _d : undefined,
                                     convertBucketing: firestoreDataByCustomerId.convertBucketing.map(b => ({
                                         experimentId: String(b.experienceId),
                                         variationId: String(b.variationId)
@@ -134,7 +135,8 @@ const zidAuthCallbackController = async (req, res) => {
                                     attributionSource = 'Firestore (by orderId context key)';
                                     storedContextData = {
                                         convertVisitorId: firestoreDataByOrderId.convertVisitorId,
-                                        zidCustomerId: firestoreDataByOrderId.zidCustomerId,
+                                        // --- FIX 2 of 2: Convert null to undefined to match the expected type ---
+                                        zidCustomerId: (_e = firestoreDataByOrderId.zidCustomerId) !== null && _e !== void 0 ? _e : undefined,
                                         convertBucketing: firestoreDataByOrderId.convertBucketing.map(b => ({
                                             experimentId: String(b.experienceId),
                                             variationId: String(b.variationId)

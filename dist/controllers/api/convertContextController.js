@@ -96,7 +96,10 @@ const captureConvertContextController = async (req, res) => {
         // Prepare data for Firestore, aligning with src/types/index.d.ts FirestoreStoredBucketingInfo
         const infoToStoreForFirestore = {
             convertVisitorId: convertVisitorId,
-            zidCustomerId: zidCustomerId !== null && zidCustomerId !== void 0 ? zidCustomerId : undefined,
+            // --- THIS IS THE FIX ---
+            // If zidCustomerId is null or undefined from the request, explicitly store null in Firestore.
+            zidCustomerId: zidCustomerId !== null && zidCustomerId !== void 0 ? zidCustomerId : null,
+            // --- END OF FIX ---
             convertBucketing: bucketingToStore.map((b) => ({
                 experienceId: parseInt(b.experimentId),
                 variationId: parseInt(b.variationId)

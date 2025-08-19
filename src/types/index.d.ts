@@ -14,7 +14,7 @@ export interface StoredConvertBucketingEntry {
 // Represents the client-side context (visitor data, experiment buckets) stored persistently.
 export interface StoredBucketingInfo {
   convertVisitorId: string; // This will be the document ID in Firestore
-  zidCustomerId?: string; // Optional Zid customer ID, stored for lookup
+  zidCustomerId?: string | null; // Optional Zid customer ID, stored for lookup
   convertBucketing: StoredConvertBucketingEntry[]; // Array of experiments and variations with numeric IDs
   // Timestamp can be a Firestore FieldValue (for writes), a Timestamp object (for reads), or a number (for in-memory compatibility)
   timestamp: admin.firestore.FieldValue | admin.firestore.Timestamp | number; 
