@@ -13,15 +13,6 @@ import * as admin from 'firebase-admin'; // Added: Import admin to handle Firest
 
 const TARGET_REPORTING_CURRENCY = 'SAR';
 
-// ZidProduct interface is now imported from src/types/index.d.ts
-// interface ZidProduct {
-//     id: string | number;
-//     sku?: string;
-//     name: string;
-//     price: number | string;
-//     quantity: number | string;
-// }
-
 export const zidOrderEventsWebhookController = async (req: Request, res: Response) => {
     const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
     const providedToken = req.query.token;
@@ -31,9 +22,32 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         return res.status(403).send("Forbidden: Invalid token.");
     }
 
+    // Acknowledge the webhook immediately to prevent Zid from resending.
     res.status(200).json({ message: "Webhook received and validated. Processing in background." });
 
     try {
+        // ================================================================
+        // === TEMPORARY DEBUGGING BLOCK TO LOG THE ENTIRE WEBHOOK      ===
+        // ================================================================
+        console.log("\n\n================================================================");
+        console.log("=        STARTING RAW ZID WEBHOOK PAYLOAD INSPECTION       =");
+        console.log("================================================================");
+        console.log(`Received at: ${new Date().toISOString()}`);
+        console.log("--- HEADERS ---");
+        console.log(JSON.stringify(req.headers, null, 2));
+        console.log("--- RAW BODY ---");
+        // This logs the body exactly as it arrived, which is crucial if it's a string.
+        console.log(req.body);
+        console.log("--- PARSED BODY (as JSON) ---");
+        // This ensures that even if the body is a string, we see its structure.
+        console.log(JSON.stringify(typeof req.body === 'string' ? JSON.parse(req.body) : req.body, null, 2));
+        console.log("================================================================");
+        console.log("=         ENDING RAW ZID WEBHOOK PAYLOAD INSPECTION        =");
+        console.log("================================================================");
+        // ================================================================
+        // === END OF TEMPORARY DEBUGGING BLOCK                         ===
+        // ================================================================
+
         let zidOrder;
         if (typeof req.body === 'string') {
             zidOrder = JSON.parse(req.body);
@@ -62,7 +76,6 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             console.warn(`${orderLogPrefix} [WEBHOOK] Zid Customer ID missing. Attempting lookup with order ID context key '${zidOrderIdKey}'.`);
         }
 
-        // FIX: The type for storedContext is now NormalizedBucketingInfo or null/undefined
         let storedContext: NormalizedBucketingInfo | null | undefined = undefined;
         let attributionSource = 'No Context';
         let visitorIdForConvert: string;
@@ -78,14 +91,11 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                 attributionSource = 'Firestore (by zidCustomerId)';
                 storedContext = {
                     convertVisitorId: firestoreData.convertVisitorId,
-                    // --- FIX 1 of 2: Convert null to undefined to match the expected type ---
                     zidCustomerId: firestoreData.zidCustomerId ?? undefined,
-                    // Map StoredConvertBucketingEntry (numbers) to {experimentId: string, variationId: string}
                     convertBucketing: firestoreData.convertBucketing.map(b => ({
                         experimentId: String(b.experienceId),
                         variationId: String(b.variationId)
                     })),
-                    // Convert Firestore Timestamp to number (milliseconds)
                     timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
                     zidPagePath: firestoreData.zidPagePath
                 };
@@ -99,14 +109,11 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                 attributionSource = 'Firestore (by orderId context key)';
                 storedContext = {
                     convertVisitorId: firestoreData.convertVisitorId,
-                    // --- FIX 2 of 2: Convert null to undefined to match the expected type ---
                     zidCustomerId: firestoreData.zidCustomerId ?? undefined,
-                    // Map StoredConvertBucketingEntry (numbers) to {experimentId: string, variationId: string}
                     convertBucketing: firestoreData.convertBucketing.map(b => ({
                         experimentId: String(b.experienceId),
                         variationId: String(b.variationId)
                     })),
-                    // Convert Firestore Timestamp to number (milliseconds)
                     timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
                     zidPagePath: firestoreData.zidPagePath
                 };
@@ -132,34 +139,31 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             if (inMemoryData) {
                 storedContext = {
                     convertVisitorId: inMemoryData.convertVisitorId,
-                    zidCustomerId: undefined, // In-memory interface doesn't explicitly store this
-                    convertBucketing: inMemoryData.convertBucketing.map(b => ({ // Already strings, but mapping ensures consistency
+                    zidCustomerId: undefined,
+                    convertBucketing: inMemoryData.convertBucketing.map(b => ({
                         experimentId: b.experimentId,
                         variationId: b.variationId
                     })),
-                    timestamp: inMemoryData.timestamp, // Already a number
+                    timestamp: inMemoryData.timestamp,
                     zidPagePath: inMemoryData.zidPagePath
                 };
             }
         }
         // ==========================================================================================
 
-        // Determine the visitorId for Convert API based on found context or fallback to zidCustomerId
         visitorIdForConvert = storedContext?.convertVisitorId || zidCustomerId || `zid-guest-${zidOrder.id}`;
         console.log(`${orderLogPrefix} Using VID for Convert payload: '${visitorIdForConvert}' (Source: ${attributionSource})`);
 
         const eventsForConvert: Event[] = [];
 
-        // Add bucketing events if context was found AND it contains bucketing data
         if (storedContext && storedContext.convertBucketing && Array.isArray(storedContext.convertBucketing) && storedContext.convertBucketing.length > 0) {
             console.log(`${orderLogPrefix} Context FOUND (${attributionSource}). Adding bucketing events.`);
             storedContext.convertBucketing.forEach(bucket => {
-                // These properties are now guaranteed to be strings from the normalization step into NormalizedBucketingInfo
                 eventsForConvert.push({
                     eventType: 'bucketing',
                     data: {
-                        experienceId: bucket.experimentId, // Now correctly typed as string
-                        variationId: bucket.variationId    // Now correctly typed as string
+                        experienceId: bucket.experimentId,
+                        variationId: bucket.variationId
                     }
                 });
             });
@@ -174,7 +178,7 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         let productsForPayload: ConvertProductType[] = []; 
         if (zidOrder.products && Array.isArray(zidOrder.products)) {
             productsForPayload = await Promise.all(
-                zidOrder.products.map(async (product: ZidProduct) => { // Explicitly type product
+                zidOrder.products.map(async (product: ZidProduct) => {
                     const itemPrice = parseFloat(String(product.price)) || 0;
                     const convertedItemPrice = await CurrencyService.convertToSAR(itemPrice, originalCurrencyCode);
                     return {
@@ -182,7 +186,7 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                         productName: product.name,
                         unitPrice: convertedItemPrice,
                         quantity: parseInt(String(product.quantity), 10) || 0
-                    } as ConvertProductType; // Explicit type assertion
+                    } as ConvertProductType;
                 })
             );
         }
