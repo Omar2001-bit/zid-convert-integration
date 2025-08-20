@@ -2,7 +2,6 @@
 import { Request, Response } from 'express';
 import { ConvertApiService, Event, Visitor, Product as ConvertProductType } from '../../services/convert-service';
 import { CurrencyService } from '../../services/currency-service';
-// --- MODIFIED ---: Import the new heuristic lookup function.
 import { getContextByConvertVisitorId, getContextByZidCustomerId, getHeuristicGuestContext } from '../../services/firestore-service';
 import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry, ZidProduct, NormalizedBucketingInfo } from '../../types/index';
 import { getStoredClientContext as getInMemoryContext, StoredBucketingInfo as InMemoryStoredBucketingInfo } from '../api/convertContextController';
@@ -10,7 +9,6 @@ import * as admin from 'firebase-admin';
 
 const TARGET_REPORTING_CURRENCY = 'SAR';
 
-// --- NEW ---: Helper function to get the real client IP from Zid's webhook headers.
 function getClientIpFromWebhook(req: Request): string | undefined {
     const ipHeaders = ['x-forwarded-for', 'x-real-ip', 'true-client-ip'];
     for (const header of ipHeaders) {
@@ -28,24 +26,20 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
     const providedToken = req.query.token;
 
     if (!secretToken || providedToken !== secretToken) {
-        console.warn('[SECURITY] Webhook request rejected. Invalid or missing token.');
         return res.status(403).send("Forbidden: Invalid token.");
     }
     res.status(200).json({ message: "Webhook received and validated. Processing in background." });
 
     try {
-        // --- MODIFIED ---: Capture the client IP from the webhook request itself.
         const webhookClientIp = getClientIpFromWebhook(req);
 
-        // --- PRESERVED ---: Your temporary logging block is untouched.
+        // --- PRESERVED: Your temporary logging block ---
         console.log("\n\n================================================================");
         console.log("=        STARTING RAW ZID WEBHOOK PAYLOAD INSPECTION       =");
         console.log("================================================================");
         console.log(`Received at: ${new Date().toISOString()}`);
         console.log("--- HEADERS ---");
         console.log(JSON.stringify(req.headers, null, 2));
-        console.log("--- RAW BODY ---");
-        console.log(req.body);
         console.log("--- PARSED BODY (as JSON) ---");
         console.log(JSON.stringify(typeof req.body === 'string' ? JSON.parse(req.body) : req.body, null, 2));
         console.log("================================================================");
@@ -59,10 +53,8 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             zidOrder = req.body;
         }
         
-        const eventType = 'order.create';
-        console.log(`[SUCCESS] Webhook request validated for event: ${eventType}`);
         if (!zidOrder || !zidOrder.id) {
-            console.error("Webhook payload did not contain a valid order ID. Body:", zidOrder);
+            console.error("Webhook payload did not contain a valid order ID.");
             return;
         }
 
@@ -71,21 +63,40 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
 
         const zidCustomerId = zidOrder.customer?.id?.toString();
-        const zidOrderIdKey = `orderctx_${zidOrder.id}`;
-
-        if (!zidCustomerId) {
-            console.warn(`${orderLogPrefix} [WEBHOOK] Zid Customer ID missing. This is a GUEST order.`);
-        }
-
+        
         let storedContext: NormalizedBucketingInfo | null | undefined = undefined;
         let attributionSource = 'No Context';
 
         // ==========================================================================================
-        // === LOOKUP LOGIC: PRESERVED ORIGINAL FLOW, WITH HEURISTIC ADDED AS FINAL FALLBACK      ===
+        // === FINAL REFINED LOGIC: Use the `is_guest_customer` flag to determine the path        ===
         // ==========================================================================================
+        
+        // --- PATH 1: GUEST USER ---
+        // We now explicitly check the flag Zid provides.
+        if (zidOrder.is_guest_customer === 1) {
+            console.log(`${orderLogPrefix} [WEBHOOK] Guest user detected via 'is_guest_customer' flag. Attempting heuristic lookup.`);
+            if (webhookClientIp) {
+                const purchaseTimestamp = zidOrder.created_at ? new Date(zidOrder.created_at) : new Date();
+                const firestoreData = await getHeuristicGuestContext(webhookClientIp, purchaseTimestamp);
 
-        // 1. Try fetching from Firestore by zidCustomerId (for logged-in users)
-        if (zidCustomerId) {
+                if (firestoreData) {
+                    attributionSource = 'Firestore (Heuristic: IP + Timestamp)';
+                    storedContext = { /* ... normalization logic ... */ 
+                        convertVisitorId: firestoreData.convertVisitorId,
+                        zidCustomerId: firestoreData.zidCustomerId ?? undefined,
+                        convertBucketing: firestoreData.convertBucketing.map(b => ({ experimentId: String(b.experienceId), variationId: String(b.variationId) })),
+                        timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
+                        zidPagePath: firestoreData.zidPagePath
+                    };
+                }
+            } else {
+                 console.warn(`${orderLogPrefix} [WEBHOOK] Guest order detected, but no client IP was found in webhook headers. Cannot perform heuristic lookup.`);
+            }
+        }
+        // --- PATH 2: LOGGED-IN USER ---
+        // If it's not a guest, we use the reliable customer ID.
+        else if (zidCustomerId) {
+            console.log(`${orderLogPrefix} [WEBHOOK] Logged-in user detected. Performing direct lookup by zidCustomerId: ${zidCustomerId}`);
             const firestoreData = await getContextByZidCustomerId(zidCustomerId);
             if (firestoreData) {
                 attributionSource = 'Firestore (by zidCustomerId)';
@@ -99,67 +110,12 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             }
         }
 
-        // 2. If not found, try fetching from Firestore by specific order ID key (from older "signal" logic)
-        if (!storedContext && zidOrderIdKey) {
-            const firestoreData = await getContextByConvertVisitorId(zidOrderIdKey);
-            if (firestoreData) {
-                attributionSource = 'Firestore (by orderId context key)';
-                storedContext = { /* ... normalization logic ... */ 
-                    convertVisitorId: firestoreData.convertVisitorId,
-                    zidCustomerId: firestoreData.zidCustomerId ?? undefined,
-                    convertBucketing: firestoreData.convertBucketing.map(b => ({ experimentId: String(b.experienceId), variationId: String(b.variationId) })),
-                    timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
-                    zidPagePath: firestoreData.zidPagePath
-                };
-            }
-        }
-
-        // 3. If still not found, fallback to in-memory store
-        if (!storedContext) {
-            let inMemoryData: InMemoryStoredBucketingInfo | undefined = undefined;
-            if (zidCustomerId) {
-                inMemoryData = getInMemoryContext(zidCustomerId);
-                if (inMemoryData) { attributionSource = 'In-Memory (by zidCustomerId)'; }
-            }
-            if (!inMemoryData && zidOrderIdKey) {
-                inMemoryData = getInMemoryContext(zidOrderIdKey);
-                if (inMemoryData) { attributionSource = 'In-Memory (by orderId context key)'; }
-            }
-            if (inMemoryData) {
-                storedContext = { /* ... normalization logic ... */ 
-                    convertVisitorId: inMemoryData.convertVisitorId,
-                    zidCustomerId: undefined,
-                    convertBucketing: inMemoryData.convertBucketing.map(b => ({ experimentId: b.experimentId, variationId: b.variationId })),
-                    timestamp: inMemoryData.timestamp,
-                    zidPagePath: inMemoryData.zidPagePath
-                };
-            }
-        }
-        
-        // --- NEW STEP 4: HEURISTIC LOOKUP FOR GUESTS ---
-        // If NO context has been found by any other method AND this is a guest order, try the heuristic lookup.
-        if (!storedContext && !zidCustomerId && webhookClientIp) {
-            console.log(`${orderLogPrefix} [WEBHOOK] No context found via direct keys. Attempting heuristic lookup for guest.`);
-            const purchaseTimestamp = zidOrder.created_at ? new Date(zidOrder.created_at) : new Date();
-            const firestoreData = await getHeuristicGuestContext(webhookClientIp, purchaseTimestamp);
-
-            if (firestoreData) {
-                attributionSource = 'Firestore (Heuristic: IP + Timestamp)';
-                storedContext = { /* ... normalization logic ... */ 
-                    convertVisitorId: firestoreData.convertVisitorId,
-                    zidCustomerId: firestoreData.zidCustomerId ?? undefined,
-                    convertBucketing: firestoreData.convertBucketing.map(b => ({ experimentId: String(b.experienceId), variationId: String(b.variationId) })),
-                    timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
-                    zidPagePath: firestoreData.zidPagePath
-                };
-            }
-        }
         // ==========================================================================================
 
         const visitorIdForConvert = storedContext?.convertVisitorId || zidCustomerId || `zid-guest-${zidOrder.id}`;
         console.log(`${orderLogPrefix} Using VID for Convert payload: '${visitorIdForConvert}' (Source: ${attributionSource})`);
 
-        // ... (The rest of your file from this point on remains exactly the same and is preserved) ...
+        // ... (The rest of the file remains the same) ...
         const eventsForConvert: Event[] = [];
 
         if (storedContext && storedContext.convertBucketing && Array.isArray(storedContext.convertBucketing) && storedContext.convertBucketing.length > 0) {
