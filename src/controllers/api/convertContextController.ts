@@ -1,11 +1,9 @@
 // src/controllers/api/convertContextController.ts
 import { Request, Response } from 'express';
-// Updated import: Removed ConvertTrackPayload as it's no longer used, kept modern interfaces
 import { ConvertApiService, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../services/convert-service';
-// Added: Import Firestore service functions
 import { saveContext } from '../../services/firestore-service';
-import * as admin from 'firebase-admin'; // Added: Import admin to use admin.firestore.FieldValue
-// Added: Import StoredBucketingInfo and StoredConvertBucketingEntry from the new global types file
+import * as admin from 'firebase-admin';
+// NOTE: You will need to add `ipAddress` to this type definition in your types file.
 import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry } from '../../types/index';
 
 interface ConvertClientContextPayload {
@@ -15,19 +13,32 @@ interface ConvertClientContextPayload {
     zidCustomerId?: string | null;
 }
 
-// This interface is correct for the in-memory solution. PRESERVED AS REQUESTED.
 export interface StoredBucketingInfo {
     convertVisitorId: string;
-    convertBucketing: Array<{ experimentId: string; variationId: string; }>; // Uses 'experimentId'
+    convertBucketing: Array<{ experimentId: string; variationId: string; }>;
     timestamp: number;
     zidPagePath?: string;
-    // Note: zidCustomerId is implicitly handled as a key in clientContextStore, not a property of this interface.
-    // For Firestore, it will be an explicit property.
 }
 
 const clientContextStore: Record<string, StoredBucketingInfo> = {};
 
-// PRESERVED: The function remains synchronous and only reads from the local in-memory object.
+// NEW HELPER FUNCTION TO GET THE REAL CLIENT IP ADDRESS
+/**
+ * Extracts the client's IP address from the request, respecting proxy headers.
+ * @param req The Express request object.
+ * @returns The client's IP address or undefined.
+ */
+function getClientIp(req: Request): string | undefined {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (typeof forwardedFor === 'string') {
+        // 'x-forwarded-for' can be a comma-separated list. The client IP is the first one.
+        return forwardedFor.split(',')[0].trim();
+    }
+    // Fallback for direct connections or other proxy headers.
+    return req.ip || req.socket.remoteAddress;
+}
+
+
 export function getStoredClientContext(key: string): StoredBucketingInfo | undefined {
     console.log(`DEBUG: getStoredClientContext called with key: "${key}" (type: ${typeof key})`);
     if (!key) {
@@ -45,6 +56,9 @@ export function getStoredClientContext(key: string): StoredBucketingInfo | undef
 
 export const captureConvertContextController = async (req: Request, res: Response) => {
     try {
+        // --- MODIFICATION: Capture the client's IP address at the start ---
+        const clientIp = getClientIp(req);
+
         let contextData: ConvertClientContextPayload;
 
         if (typeof req.body === 'string' && req.body.length > 0) {
@@ -59,65 +73,52 @@ export const captureConvertContextController = async (req: Request, res: Respons
 
         if (!convertVisitorId) {
             console.warn("/api/capture-convert-context: No convertVisitorId provided. Cannot store context.");
-            console.log("--> Failing payload dump:", JSON.stringify(contextData));
             return res.status(200).json({ message: "Context ignored, missing convertVisitorId." });
         }
 
         const bucketingToStore: Array<{ experimentId: string; variationId: string; }> =
             (Array.isArray(convertBucketing))
                 ? convertBucketing
-                    // CORRECTED: Ensure we filter based on existence of properties from the input payload (experienceId)
                     .filter((b): b is { experienceId: string, variationId: string } =>
                         !!(b && b.experienceId && b.variationId)
                     )
                     .map(b => ({
-                        // CORRECTED: Map 'experienceId' from the input to 'experimentId' for storage
                         experimentId: b.experienceId,
                         variationId: b.variationId
                     }))
                 : [];
 
-        if (bucketingToStore.length === 0) {
-            console.log("Context received, but no valid bucketing data to store. Proceeding to save visitor ID only (if valid).");
-        }
-
-        // --- PRESERVED: Original in-memory store logic ---
+        // --- PRESERVED: Original in-memory store logic (unchanged) ---
         const infoToStoreInMemory: StoredBucketingInfo = {
             convertVisitorId: convertVisitorId,
             convertBucketing: bucketingToStore,
-            timestamp: Date.now(), // Still uses number for in-memory store
+            timestamp: Date.now(),
             zidPagePath: zidPagePath
         };
         
         if (zidCustomerId) {
             clientContextStore[zidCustomerId] = infoToStoreInMemory;
-            console.log(`Stored/Updated IN-MEMORY context for zidCustomerId: '${zidCustomerId}'.`);
         }
         clientContextStore[convertVisitorId] = infoToStoreInMemory;
-        console.log(`Stored/Updated IN-MEMORY context for convertVisitorId: '${convertVisitorId}'.`);
-        console.log(`Current IN-MEMORY store keys after update: [${Object.keys(clientContextStore).join(', ')}]`);
         // --- END PRESERVED ---
 
-        // --- ADDED: Firestore persistence logic ---
-        // Prepare data for Firestore, aligning with src/types/index.d.ts FirestoreStoredBucketingInfo
-        const infoToStoreForFirestore: FirestoreStoredBucketingInfo = { // Changed type annotation
+        // --- MODIFICATION: Add the captured IP address to the Firestore payload ---
+        // IMPORTANT: You must add `ipAddress?: string | null;` to the StoredBucketingInfo interface in your `src/types/index.d.ts` file.
+        const infoToStoreForFirestore: FirestoreStoredBucketingInfo = {
             convertVisitorId: convertVisitorId,
-            // --- THIS IS THE FIX ---
-            // If zidCustomerId is null or undefined from the request, explicitly store null in Firestore.
             zidCustomerId: zidCustomerId ?? null, 
-            // --- END OF FIX ---
-            convertBucketing: bucketingToStore.map((b: { experimentId: string; variationId: string; }): StoredConvertBucketingEntry => ({ // Explicitly type map callback
+            ipAddress: clientIp ?? null, // ADDED: Store the IP address.
+            convertBucketing: bucketingToStore.map((b): StoredConvertBucketingEntry => ({
                 experienceId: parseInt(b.experimentId), 
                 variationId: parseInt(b.variationId)    
             })),
-            timestamp: admin.firestore.FieldValue.serverTimestamp(), // Use Firestore server timestamp
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
             zidPagePath: zidPagePath
         };
         
         await saveContext(infoToStoreForFirestore);
-        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' and zidCustomerId: '${zidCustomerId || 'N/A'}'.`);
-        // --- END ADDED ---
-
+        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' | zidCustomerId: '${zidCustomerId || 'N/A'}' | IP: '${clientIp || 'N/A'}'`);
+        
         res.status(200).json({ message: "Convert context received and stored successfully." });
 
     } catch (error) {
@@ -127,6 +128,7 @@ export const captureConvertContextController = async (req: Request, res: Respons
     }
 };
 
+// ... (handlePurchaseSignalController and default export remain unchanged) ...
 // --- handlePurchaseSignalController: Now exclusively uses the new Metrics V1 API call ---
 interface PurchaseSignalPayload {
     convertVisitorId: string | null;

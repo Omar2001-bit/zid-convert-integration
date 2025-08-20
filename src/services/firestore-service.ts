@@ -1,7 +1,6 @@
 // src/services/firestore-service.ts
 
 import * as admin from 'firebase-admin';
-// Fix: Corrected import name from 'ConvertBucketingEntry' to 'StoredConvertBucketingEntry'
 import { StoredBucketingInfo, StoredConvertBucketingEntry } from '../types/index'; 
 
 const CONVERSION_CONTEXT_COLLECTION = 'conversionContext';
@@ -18,20 +17,19 @@ export const saveContext = async (context: StoredBucketingInfo): Promise<void> =
   }
   try {
     const db = admin.firestore();
-    // Add a server timestamp. This is useful for TTL/cleanup rules later on Firestore.
-    // Ensure the timestamp property on StoredBucketingInfo is defined as admin.firestore.FieldValue for type compatibility.
     const contextToSave = {
       ...context,
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     };
 
     await db.collection(CONVERSION_CONTEXT_COLLECTION)
-            .doc(context.convertVisitorId) // Use convertVisitorId as the document ID
-            .set(contextToSave, { merge: true }); // Use merge to update existing fields without overwriting the whole doc
-    console.log(`DEBUG: Context saved/updated in Firestore for visitor: ${context.convertVisitorId}`);
+            .doc(context.convertVisitorId)
+            .set(contextToSave, { merge: true });
+    // Updated log to be more specific on what is being saved
+    console.log(`DEBUG: Context saved/updated in Firestore for visitor: ${context.convertVisitorId}`, contextToSave);
   } catch (error) {
     console.error(`ERROR: Failed to save context for visitor ${context.convertVisitorId} to Firestore:`, error instanceof Error ? error.message : error);
-    throw error; // Re-throw to be handled by the caller if necessary
+    throw error;
   }
 };
 
@@ -51,11 +49,7 @@ export const getContextByConvertVisitorId = async (convertVisitorId: string): Pr
     const doc = await docRef.get();
 
     if (doc.exists) {
-      // Cast the data to StoredBucketingInfo, ensuring proper type conversion if needed (e.g., timestamp)
       const data = doc.data() as StoredBucketingInfo;
-      // Convert Firestore Timestamp to number if your StoredBucketingInfo expects a number
-      // For now, let's assume it can handle Firebase's Timestamp type if used directly or a number (Date.now()) if not.
-      // If it absolutely needs a number, add: data.timestamp = (data.timestamp as any)?.toMillis() || Date.now();
       console.log(`DEBUG: Context found in Firestore by convertVisitorId: ${convertVisitorId}`);
       return data;
     } else {
@@ -64,7 +58,7 @@ export const getContextByConvertVisitorId = async (convertVisitorId: string): Pr
     }
   } catch (error) {
     console.error(`ERROR: Failed to retrieve context by convertVisitorId ${convertVisitorId} from Firestore:`, error instanceof Error ? error.message : error);
-    return null; // Return null on error so caller can handle gracefully
+    return null;
   }
 };
 
@@ -81,11 +75,10 @@ export const getContextByZidCustomerId = async (zidCustomerId: string): Promise<
   }
   try {
     const db = admin.firestore();
-    // Query for documents where zidCustomerId matches, ordered by timestamp (most recent first)
     const snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
                               .where('zidCustomerId', '==', zidCustomerId)
-                              .orderBy('timestamp', 'desc') // Important for getting the most recent context
-                              .limit(1) // We only need one matching document
+                              .orderBy('timestamp', 'desc')
+                              .limit(1)
                               .get();
 
     if (!snapshot.empty) {
@@ -98,6 +91,55 @@ export const getContextByZidCustomerId = async (zidCustomerId: string): Promise<
     }
   } catch (error) {
     console.error(`ERROR: Failed to retrieve context by zidCustomerId ${zidCustomerId} from Firestore:`, error instanceof Error ? error.message : error);
-    return null; // Return null on error so caller can handle gracefully
+    return null;
+  }
+};
+
+
+// ===================================================================
+// === NEW HEURISTIC LOOKUP FUNCTION FOR GUEST ATTRIBUTION         ===
+// ===================================================================
+/**
+ * Retrieves the most recent guest context from Firestore based on IP address and timestamp.
+ * This is a heuristic approach for attributing guest checkouts.
+ * @param ipAddress The customer's IP address from the webhook.
+ * @param purchaseTimestamp The timestamp of the order creation.
+ * @returns The StoredBucketingInfo object or null if not found.
+ */
+export const getHeuristicGuestContext = async (ipAddress: string, purchaseTimestamp: Date): Promise<StoredBucketingInfo | null> => {
+  if (!ipAddress) {
+    console.log('DEBUG: No IP address provided for heuristic lookup, returning null.');
+    return null;
+  }
+  try {
+    const db = admin.firestore();
+    
+    // Define a time window (e.g., 5 minutes before the purchase)
+    const windowMinutes = 5;
+    const startTime = new Date(purchaseTimestamp.getTime() - windowMinutes * 60 * 1000);
+
+    // Query for guest contexts (zidCustomerId is null) from the correct IP,
+    // within our time window, and get the most recent one.
+    // NOTE: This query requires a composite index in Firestore to work.
+    const snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
+                              .where('zidCustomerId', '==', null)
+                              .where('ipAddress', '==', ipAddress)
+                              .where('timestamp', '>=', startTime)
+                              .where('timestamp', '<=', purchaseTimestamp)
+                              .orderBy('timestamp', 'desc')
+                              .limit(1)
+                              .get();
+
+    if (!snapshot.empty) {
+      const data = snapshot.docs[0].data() as StoredBucketingInfo;
+      console.log(`DEBUG: Heuristic context FOUND in Firestore by IP ${ipAddress}. Visitor: ${data.convertVisitorId}`);
+      return data;
+    } else {
+      console.log(`DEBUG: Heuristic context NOT FOUND in Firestore for IP ${ipAddress} within the time window.`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`ERROR: Failed to retrieve heuristic context for IP ${ipAddress} from Firestore:`, error instanceof Error ? error.message : error);
+    return null;
   }
 };
