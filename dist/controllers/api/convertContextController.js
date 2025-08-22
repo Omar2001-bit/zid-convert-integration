@@ -24,13 +24,25 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ADDITIVE_DIAGNOSTIC_NAMED_EXPORT = exports.handlePurchaseSignalController = exports.captureConvertContextController = exports.getStoredClientContext = void 0;
-// Updated import: Removed ConvertTrackPayload as it's no longer used, kept modern interfaces
 const convert_service_1 = require("../../services/convert-service");
-// Added: Import Firestore service functions
 const firestore_service_1 = require("../../services/firestore-service");
-const admin = __importStar(require("firebase-admin")); // Added: Import admin to use admin.firestore.FieldValue
+const admin = __importStar(require("firebase-admin"));
 const clientContextStore = {};
-// PRESERVED: The function remains synchronous and only reads from the local in-memory object.
+// NEW HELPER FUNCTION TO GET THE REAL CLIENT IP ADDRESS
+/**
+ * Extracts the client's IP address from the request, respecting proxy headers.
+ * @param req The Express request object.
+ * @returns The client's IP address or undefined.
+ */
+function getClientIp(req) {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (typeof forwardedFor === 'string') {
+        // 'x-forwarded-for' can be a comma-separated list. The client IP is the first one.
+        return forwardedFor.split(',')[0].trim();
+    }
+    // Fallback for direct connections or other proxy headers.
+    return req.ip || req.socket.remoteAddress;
+}
 function getStoredClientContext(key) {
     console.log(`DEBUG: getStoredClientContext called with key: "${key}" (type: ${typeof key})`);
     if (!key) {
@@ -49,6 +61,8 @@ function getStoredClientContext(key) {
 exports.getStoredClientContext = getStoredClientContext;
 const captureConvertContextController = async (req, res) => {
     try {
+        // --- MODIFICATION: Capture the client's IP address at the start ---
+        const clientIp = getClientIp(req);
         let contextData;
         if (typeof req.body === 'string' && req.body.length > 0) {
             console.log('[capture-convert-context] Received text body, attempting to parse as JSON.');
@@ -61,23 +75,17 @@ const captureConvertContextController = async (req, res) => {
         const { zidCustomerId, convertVisitorId, convertBucketing, zidPagePath } = contextData;
         if (!convertVisitorId) {
             console.warn("/api/capture-convert-context: No convertVisitorId provided. Cannot store context.");
-            console.log("--> Failing payload dump:", JSON.stringify(contextData));
             return res.status(200).json({ message: "Context ignored, missing convertVisitorId." });
         }
         const bucketingToStore = (Array.isArray(convertBucketing))
             ? convertBucketing
-                // CORRECTED: Ensure we filter based on existence of properties from the input payload (experienceId)
                 .filter((b) => !!(b && b.experienceId && b.variationId))
                 .map(b => ({
-                // CORRECTED: Map 'experienceId' from the input to 'experimentId' for storage
                 experimentId: b.experienceId,
                 variationId: b.variationId
             }))
             : [];
-        if (bucketingToStore.length === 0) {
-            console.log("Context received, but no valid bucketing data to store. Proceeding to save visitor ID only (if valid).");
-        }
-        // --- PRESERVED: Original in-memory store logic ---
+        // --- PRESERVED: Original in-memory store logic (unchanged) ---
         const infoToStoreInMemory = {
             convertVisitorId: convertVisitorId,
             convertBucketing: bucketingToStore,
@@ -86,20 +94,15 @@ const captureConvertContextController = async (req, res) => {
         };
         if (zidCustomerId) {
             clientContextStore[zidCustomerId] = infoToStoreInMemory;
-            console.log(`Stored/Updated IN-MEMORY context for zidCustomerId: '${zidCustomerId}'.`);
         }
         clientContextStore[convertVisitorId] = infoToStoreInMemory;
-        console.log(`Stored/Updated IN-MEMORY context for convertVisitorId: '${convertVisitorId}'.`);
-        console.log(`Current IN-MEMORY store keys after update: [${Object.keys(clientContextStore).join(', ')}]`);
         // --- END PRESERVED ---
-        // --- ADDED: Firestore persistence logic ---
-        // Prepare data for Firestore, aligning with src/types/index.d.ts FirestoreStoredBucketingInfo
+        // --- MODIFICATION: Add the captured IP address to the Firestore payload ---
+        // IMPORTANT: You must add `ipAddress?: string | null;` to the StoredBucketingInfo interface in your `src/types/index.d.ts` file.
         const infoToStoreForFirestore = {
             convertVisitorId: convertVisitorId,
-            // --- THIS IS THE FIX ---
-            // If zidCustomerId is null or undefined from the request, explicitly store null in Firestore.
             zidCustomerId: zidCustomerId !== null && zidCustomerId !== void 0 ? zidCustomerId : null,
-            // --- END OF FIX ---
+            ipAddress: clientIp !== null && clientIp !== void 0 ? clientIp : null,
             convertBucketing: bucketingToStore.map((b) => ({
                 experienceId: parseInt(b.experimentId),
                 variationId: parseInt(b.variationId)
@@ -108,8 +111,7 @@ const captureConvertContextController = async (req, res) => {
             zidPagePath: zidPagePath
         };
         await (0, firestore_service_1.saveContext)(infoToStoreForFirestore);
-        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' and zidCustomerId: '${zidCustomerId || 'N/A'}'.`);
-        // --- END ADDED ---
+        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' | zidCustomerId: '${zidCustomerId || 'N/A'}' | IP: '${clientIp || 'N/A'}'`);
         res.status(200).json({ message: "Convert context received and stored successfully." });
     }
     catch (error) {
