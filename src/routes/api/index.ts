@@ -1,9 +1,10 @@
 // src/routes/api/index.ts
 import { Router } from 'express';
-// Ensure both are listed as named imports here
+// --- MODIFIED: Import the new getClientIpController ---
 import {
     captureConvertContextController,
-    handlePurchaseSignalController // This must exactly match the exported name
+    handlePurchaseSignalController,
+    getClientIpController // Add the new controller function
 } from '../../controllers/api/convertContextController';
 
 const router = Router();
@@ -13,5 +14,9 @@ router.post('/capture-convert-context', captureConvertContextController);
 
 // Endpoint for client-side JS to signal a purchase
 router.post('/signal-purchase', handlePurchaseSignalController);
+
+// --- NEW: Route for the IP debugging endpoint ---
+// This will handle GET requests to /api/get-ip
+router.get('/get-ip', getClientIpController);
 
 export default router;

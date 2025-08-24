@@ -3,7 +3,6 @@ import { Request, Response } from 'express';
 import { ConvertApiService, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../services/convert-service';
 import { saveContext } from '../../services/firestore-service';
 import * as admin from 'firebase-admin';
-// NOTE: You will need to add `ipAddress` to this type definition in your types file.
 import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry } from '../../types/index';
 
 interface ConvertClientContextPayload {
@@ -13,6 +12,7 @@ interface ConvertClientContextPayload {
     zidCustomerId?: string | null;
 }
 
+// This local interface is for the in-memory store.
 export interface StoredBucketingInfo {
     convertVisitorId: string;
     convertBucketing: Array<{ experimentId: string; variationId: string; }>;
@@ -22,19 +22,11 @@ export interface StoredBucketingInfo {
 
 const clientContextStore: Record<string, StoredBucketingInfo> = {};
 
-// NEW HELPER FUNCTION TO GET THE REAL CLIENT IP ADDRESS
-/**
- * Extracts the client's IP address from the request, respecting proxy headers.
- * @param req The Express request object.
- * @returns The client's IP address or undefined.
- */
 function getClientIp(req: Request): string | undefined {
     const forwardedFor = req.headers['x-forwarded-for'];
     if (typeof forwardedFor === 'string') {
-        // 'x-forwarded-for' can be a comma-separated list. The client IP is the first one.
         return forwardedFor.split(',')[0].trim();
     }
-    // Fallback for direct connections or other proxy headers.
     return req.ip || req.socket.remoteAddress;
 }
 
@@ -56,16 +48,13 @@ export function getStoredClientContext(key: string): StoredBucketingInfo | undef
 
 export const captureConvertContextController = async (req: Request, res: Response) => {
     try {
-        // --- MODIFICATION: Capture the client's IP address at the start ---
         const clientIp = getClientIp(req);
 
         let contextData: ConvertClientContextPayload;
 
         if (typeof req.body === 'string' && req.body.length > 0) {
-            console.log('[capture-convert-context] Received text body, attempting to parse as JSON.');
             contextData = JSON.parse(req.body);
         } else {
-            console.log('[capture-convert-context] Received pre-parsed JSON body.');
             contextData = req.body as ConvertClientContextPayload;
         }
         
@@ -83,13 +72,21 @@ export const captureConvertContextController = async (req: Request, res: Respons
                         !!(b && b.experienceId && b.variationId)
                     )
                     .map(b => ({
+                        // --- FIX 1: Corrected typo from b.experimentId to b.experienceId ---
                         experimentId: b.experienceId,
                         variationId: b.variationId
                     }))
                 : [];
 
-        // --- PRESERVED: Original in-memory store logic (unchanged) ---
-        const infoToStoreInMemory: StoredBucketingInfo = {
+        // This interface is only for the in-memory object, which we are preserving.
+        interface InMemoryStoredBucketingInfo {
+             convertVisitorId: string;
+             convertBucketing: Array<{ experimentId: string; variationId: string; }>;
+             timestamp: number;
+             zidPagePath?: string;
+        }
+
+        const infoToStoreInMemory: InMemoryStoredBucketingInfo = {
             convertVisitorId: convertVisitorId,
             convertBucketing: bucketingToStore,
             timestamp: Date.now(),
@@ -97,17 +94,14 @@ export const captureConvertContextController = async (req: Request, res: Respons
         };
         
         if (zidCustomerId) {
-            clientContextStore[zidCustomerId] = infoToStoreInMemory;
+            clientContextStore[zidCustomerId] = infoToStoreInMemory as any;
         }
-        clientContextStore[convertVisitorId] = infoToStoreInMemory;
-        // --- END PRESERVED ---
+        clientContextStore[convertVisitorId] = infoToStoreInMemory as any;
 
-        // --- MODIFICATION: Add the captured IP address to the Firestore payload ---
-        // IMPORTANT: You must add `ipAddress?: string | null;` to the StoredBucketingInfo interface in your `src/types/index.d.ts` file.
         const infoToStoreForFirestore: FirestoreStoredBucketingInfo = {
             convertVisitorId: convertVisitorId,
             zidCustomerId: zidCustomerId ?? null, 
-            ipAddress: clientIp ?? null, // ADDED: Store the IP address.
+            ipAddress: clientIp ?? null,
             convertBucketing: bucketingToStore.map((b): StoredConvertBucketingEntry => ({
                 experienceId: parseInt(b.experimentId), 
                 variationId: parseInt(b.variationId)    
@@ -128,11 +122,9 @@ export const captureConvertContextController = async (req: Request, res: Respons
     }
 };
 
-// ... (handlePurchaseSignalController and default export remain unchanged) ...
-// --- handlePurchaseSignalController: Now exclusively uses the new Metrics V1 API call ---
 interface PurchaseSignalPayload {
     convertVisitorId: string | null;
-    experiments: Array<{ experimentId: string; variationId: string; }>; // Uses 'experimentId'
+    experiments: Array<{ experimentId: string; variationId: string; }>;
     zidOrderId?: string | null;
 }
 
@@ -142,7 +134,6 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
         console.log("Received /api/signal-purchase payload:", JSON.stringify(payload, null, 2));
 
         if (!payload.convertVisitorId && !payload.zidOrderId) {
-            console.warn("/api/signal-purchase: Convert Visitor ID or Zid Order ID is required in signal. Payload:", payload);
             return res.status(400).json({ message: "Convert Visitor ID or Zid Order ID is required in signal." });
         }
 
@@ -154,29 +145,24 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
             );
 
             if (validExperimentsForOrder.length > 0) {
-                // --- PRESERVED: Original in-memory store logic ---
                 clientContextStore[orderContextKey] = {
                     convertVisitorId: payload.convertVisitorId,
                     convertBucketing: validExperimentsForOrder,
                     timestamp: Date.now(),
                 };
                 console.log(`Purchase signal: Stored IN-MEMORY experiment context for Zid Order ID '${payload.zidOrderId}'.`);
-                // --- END PRESERVED ---
 
-                // --- ADDED: Firestore persistence logic ---
-                const infoToStoreForFirestore: FirestoreStoredBucketingInfo = { // Changed type annotation
+                const infoToStoreForFirestore: FirestoreStoredBucketingInfo = {
                     convertVisitorId: payload.convertVisitorId,
-                    // zidCustomerId might not be available from this signal, so it can be undefined
-                    convertBucketing: validExperimentsForOrder.map((b: { experimentId: string; variationId: string; }): StoredConvertBucketingEntry => ({ // Explicitly type map callback
+                    convertBucketing: validExperimentsForOrder.map((b): StoredConvertBucketingEntry => ({
                         experienceId: parseInt(b.experimentId),
                         variationId: parseInt(b.variationId)
                     })),
                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                    zidPagePath: undefined // Page path is not typically part of this signal
+                    zidPagePath: undefined
                 };
                 await saveContext(infoToStoreForFirestore);
                 console.log(`Purchase signal: Stored FIRESTORE experiment context for convertVisitorId '${payload.convertVisitorId}' for Zid Order ID '${payload.zidOrderId}'.`);
-                // --- END ADDED ---
 
             } else {
                  console.log(`Purchase signal: Received Zid Order ID '${payload.zidOrderId}' but experiments array was empty or invalid after filtering.`);
@@ -189,53 +175,41 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
             const convertGoalIdString = process.env.CONVERT_GOAL_ID_FOR_PURCHASE;
 
             if (!convertGoalIdString) { 
-                console.error("/api/signal-purchase: Essential Convert Goal ID configuration missing.");
                 return res.status(500).json({ message: "Server configuration error for Convert tracking." });
             }
             const convertGoalId = parseInt(convertGoalIdString, 10);
             if (isNaN(convertGoalId)) { 
-                console.error("/api/signal-purchase: Invalid Convert Goal ID.");
                 return res.status(500).json({ message: "Server configuration error: Invalid Convert Goal ID." });
             }
 
-            // --- NEW MODERN METRICS V1 API CALL ---
             const newModernHitGoalTid = `signal-metrics-v1-${payload.convertVisitorId}-${payload.zidOrderId || 'noOrder'}-${Date.now()}`;
 
-            // Prepare bucketing events from the signal payload
             const bucketingEvents: Event[] = payload.experiments
-                // Use 'exp.experimentId' as defined in PurchaseSignalPayload
                 .filter(exp => exp.experimentId && exp.variationId) 
                 .map(exp => ({
                     eventType: 'bucketing',
                     data: {
-                        // Map 'experimentId' from payload to 'experienceId' for BucketingEventData
                         experienceId: exp.experimentId!, 
                         variationId: exp.variationId!
                     } as BucketingEventData
                 }));
 
-            // Prepare conversion event
             const conversionEvent: Event = {
                 eventType: 'conversion',
                 data: {
                     goalId: convertGoalId,
                     transactionId: newModernHitGoalTid,
-                    // Note: Revenue and products are typically sent with actual order webhooks, not just signals.
-                    // Add them here if this signal is expected to contain them.
                 } as ConversionEventData
             };
             
-            // Combine events for the visitor payload
             const visitorPayload: Visitor = {
                 visitorId: payload.convertVisitorId,
-                events: [...bucketingEvents, conversionEvent] // Include both bucketing and conversion
+                events: [...bucketingEvents, conversionEvent]
             };
 
             console.log("Purchase signal: Preparing NEW v1/track METRICS API payload to Convert:", JSON.stringify(visitorPayload, null, 2));
             
-            // Calling the new, correct ConvertApiService.sendMetricsV1ApiEvents
             await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
-            // --- END NEW MODERN METRICS V1 API CALL ---
 
             res.status(200).json({ message: "Purchase signal processed, context stored by order ID (if provided & valid experiments), Convert API events dispatched." });
         } else {
@@ -248,6 +222,17 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
         res.status(500).json({ message: "Error processing purchase signal request on server." });
     }
 };
+
+// --- FIX 2: Added 'export' keyword to make the function available for import ---
+export const getClientIpController = (req: Request, res: Response) => {
+    const clientIp = getClientIp(req);
+    if (clientIp) {
+        res.status(200).json({ ipAddress: clientIp });
+    } else {
+        res.status(500).json({ error: "Could not determine client IP address." });
+    }
+};
+
 
 export const ADDITIVE_DIAGNOSTIC_NAMED_EXPORT = "Hello from ADDITIVE_DIAGNOSTIC_NAMED_EXPORT";
 const additiveDiagnosticDefaultObject = {
