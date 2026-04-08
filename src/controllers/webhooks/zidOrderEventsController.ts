@@ -2,7 +2,7 @@
 import { Request, Response } from 'express';
 import { ConvertApiService, Event, Visitor, Product as ConvertProductType } from '../../services/convert-service';
 import { CurrencyService } from '../../services/currency-service';
-import { getContextByConvertVisitorId, getContextByZidCustomerId, getHeuristicGuestContext } from '../../services/firestore-service';
+import { getContextByConvertVisitorId, getContextByZidCustomerId } from '../../services/firestore-service';
 import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry, ZidProduct, NormalizedBucketingInfo } from '../../types/index';
 import { getStoredClientContext as getInMemoryContext, StoredBucketingInfo as InMemoryStoredBucketingInfo } from '../api/convertContextController';
 import * as admin from 'firebase-admin';
@@ -63,59 +63,78 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
 
         const zidCustomerId = zidOrder.customer?.id?.toString();
+        const orderNote = zidOrder.note || '';
         
+        console.log(`${orderLogPrefix} [DEBUG] Raw Order Note: "${orderNote}"`);
+        console.log(`${orderLogPrefix} [DEBUG] Zid Customer ID: ${zidCustomerId || 'NONE'}`);
+
         let storedContext: NormalizedBucketingInfo | null | undefined = undefined;
         let attributionSource = 'No Context';
 
         // ==========================================================================================
-        // === FINAL REFINED LOGIC: Use the `is_guest_customer` flag to determine the path        ===
+        // === REFINED ATTRIBUTION LOGIC: Prioritize Cart-Note for Guests, CID for logged-in      ===
         // ==========================================================================================
         
-        // --- PATH 1: GUEST USER ---
-        // We now explicitly check the flag Zid provides.
-        if (zidOrder.is_guest_customer === 1) {
-            console.log(`${orderLogPrefix} [WEBHOOK] Guest user detected via 'is_guest_customer' flag. Attempting heuristic lookup.`);
-            if (webhookClientIp) {
-                const purchaseTimestamp = zidOrder.created_at ? new Date(zidOrder.created_at) : new Date();
-                const firestoreData = await getHeuristicGuestContext(webhookClientIp, purchaseTimestamp);
-
-                if (firestoreData) {
-                    attributionSource = 'Firestore (Heuristic: IP + Timestamp)';
-                    storedContext = { /* ... normalization logic ... */ 
-                        convertVisitorId: firestoreData.convertVisitorId,
-                        zidCustomerId: firestoreData.zidCustomerId ?? undefined,
-                        convertBucketing: firestoreData.convertBucketing.map(b => ({ experimentId: String(b.experienceId), variationId: String(b.variationId) })),
-                        timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
-                        zidPagePath: firestoreData.zidPagePath
-                    };
-                }
-            } else {
-                 console.warn(`${orderLogPrefix} [WEBHOOK] Guest order detected, but no client IP was found in webhook headers. Cannot perform heuristic lookup.`);
-            }
-        }
-        // --- PATH 2: LOGGED-IN USER ---
-        // If it's not a guest, we use the reliable customer ID.
-        else if (zidCustomerId) {
-            console.log(`${orderLogPrefix} [WEBHOOK] Logged-in user detected. Performing direct lookup by zidCustomerId: ${zidCustomerId}`);
-            const firestoreData = await getContextByZidCustomerId(zidCustomerId);
+        // --- PATH 1: CART-NOTE ATTRIBUTION (Primary for Guests) ---
+        // Look for 'convert_cid:...' in the order note.
+        console.log(`${orderLogPrefix} [DEBUG] Attempting to parse CID from note...`);
+        const cidMatch = orderNote.match(/convert_cid:([a-zA-Z0-9-]+)/);
+        
+        if (cidMatch && cidMatch[1]) {
+            const extractedCid = cidMatch[1];
+            console.log(`${orderLogPrefix} [DEBUG] MATCH FOUND -> Extracted CID: ${extractedCid}`);
+            
+            console.log(`${orderLogPrefix} [DEBUG] Querying Firestore for CID: ${extractedCid}...`);
+            const firestoreData = await getContextByConvertVisitorId(extractedCid);
+            
             if (firestoreData) {
-                attributionSource = 'Firestore (by zidCustomerId)';
-                storedContext = { /* ... normalization logic ... */ 
+                console.log(`${orderLogPrefix} [DEBUG] Firestore Data FOUND for CID ${extractedCid}. Normalizing context...`);
+                attributionSource = 'Firestore (by CID from Note)';
+                storedContext = {
                     convertVisitorId: firestoreData.convertVisitorId,
                     zidCustomerId: firestoreData.zidCustomerId ?? undefined,
                     convertBucketing: firestoreData.convertBucketing.map(b => ({ experimentId: String(b.experienceId), variationId: String(b.variationId) })),
                     timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
                     zidPagePath: firestoreData.zidPagePath
                 };
+            } else {
+                console.log(`${orderLogPrefix} [DEBUG] Firestore Data NOT FOUND for CID ${extractedCid}. Falling back to default ID attribution.`);
+                storedContext = {
+                    convertVisitorId: extractedCid,
+                    convertBucketing: [],
+                    timestamp: Date.now()
+                };
+                attributionSource = 'Direct CID from Note (No Firestore Data)';
+            }
+        } else {
+            console.log(`${orderLogPrefix} [DEBUG] No Convert CID found in order note.`);
+        }
+        
+        // --- PATH 2: LOGGED-IN CUSTOMER LOOKUP (Secondary) ---
+        if (!storedContext && zidCustomerId) {
+            console.log(`${orderLogPrefix} [DEBUG] Attempting secondary lookup by zidCustomerId: ${zidCustomerId}...`);
+            const firestoreData = await getContextByZidCustomerId(zidCustomerId);
+            if (firestoreData) {
+                console.log(`${orderLogPrefix} [DEBUG] Firestore Data FOUND for Customer ${zidCustomerId}.`);
+                attributionSource = 'Firestore (by zidCustomerId fallback)';
+                storedContext = {
+                    convertVisitorId: firestoreData.convertVisitorId,
+                    zidCustomerId: firestoreData.zidCustomerId ?? undefined,
+                    convertBucketing: firestoreData.convertBucketing.map(b => ({ experimentId: String(b.experienceId), variationId: String(b.variationId) })),
+                    timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
+                    zidPagePath: firestoreData.zidPagePath
+                };
+            } else {
+                console.log(`${orderLogPrefix} [DEBUG] Firestore Data NOT FOUND for Customer ${zidCustomerId}.`);
             }
         }
 
         // ==========================================================================================
 
+
         const visitorIdForConvert = storedContext?.convertVisitorId || zidCustomerId || `zid-guest-${zidOrder.id}`;
         console.log(`${orderLogPrefix} Using VID for Convert payload: '${visitorIdForConvert}' (Source: ${attributionSource})`);
 
-        // ... (The rest of the file remains the same) ...
         const eventsForConvert: Event[] = [];
 
         if (storedContext && storedContext.convertBucketing && Array.isArray(storedContext.convertBucketing) && storedContext.convertBucketing.length > 0) {

@@ -9,25 +9,50 @@ import mainRoutes from './routes';
 import * as admin from 'firebase-admin';
 import * as fs from 'fs';
 
-dotenv.config();
+dotenv.config({ path: 'zid-convert-integration.env' });
+
+// Fallback for local testing to ensure Firebase finds the key we just saved
+if (!process.env.FIREBASE_SERVICE_ACCOUNT_PATH && fs.existsSync('./firebase_credentials.json')) {
+    process.env.FIREBASE_SERVICE_ACCOUNT_PATH = './firebase_credentials.json';
+}
 
 const app = express();
 
 // --- FINAL EDITED CODE: Fix Private Key Formatting ---
+// --- Environment-Aware Firebase Initialization ---
 try {
-    // 1. Read the secret file from the fixed path.
-    const serviceAccountPath = '/etc/secrets/firebase_credentials.json';
-    if (!fs.existsSync(serviceAccountPath)) {
-        throw new Error(`CRITICAL: Firebase credentials file not found at path: ${serviceAccountPath}.`);
-    }
-    const serviceAccountString = fs.readFileSync(serviceAccountPath, 'utf8');
-    const serviceAccount = JSON.parse(serviceAccountString);
+    let serviceAccount: any;
 
-    // 2. THIS IS THE FIX: Manually replace the literal '\n' in the private key
-    // with actual newline characters. This corrects any copy-paste formatting errors.
-    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    if (process.env.FIREBASE_CREDENTIALS) {
+        // Option 1: Load from a stringified JSON (best for CI/CD or Cloud systems like Render)
+        serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+        console.log('Firebase: Initializing from FIREBASE_CREDENTIALS environment variable.');
+    } else {
+        // Option 2: Load from a file path
+        const defaultPath = '/etc/secrets/firebase_credentials.json'; // Render path
+        const localPath = './firebase_credentials.json'; // Common local dev path
+        
+        const path = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || 
+                     (fs.existsSync(localPath) ? localPath : defaultPath);
+
+        if (!fs.existsSync(path)) {
+            // If we're in local development, we might want to warn rather than crash, 
+            // but for this integration Firebase is critical.
+            console.warn(`\n[WARNING] Firebase credentials not found at ${path}.`);
+            console.warn(`If you are running locally, please place 'firebase_credentials.json' in the root folder or set the FIREBASE_CREDENTIALS environment variable.\n`);
+            throw new Error(`CRITICAL: Firebase credentials file not found.`);
+        }
+
+        const serviceAccountString = fs.readFileSync(path, 'utf8');
+        serviceAccount = JSON.parse(serviceAccountString);
+        console.log(`Firebase: Initializing from file: ${path}`);
+    }
+
+    // Fix literal '\n' characters in the private key if necessary
+    if (serviceAccount.private_key) {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
     
-    // 3. Initialize the SDK with the corrected service account object.
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
@@ -35,9 +60,13 @@ try {
     console.log(`Firebase Admin SDK initialized successfully! Project: ${serviceAccount.project_id}.`);
 
 } catch (error: any) {
-    console.error('CRITICAL ERROR: Failed to initialize Firebase Admin SDK.', error);
+    console.error('CRITICAL ERROR: Failed to initialize Firebase Admin SDK.', error.message);
+    // In local dev, we might not want to exit(1) if we just want to test other parts, 
+    // but the Firestore service depends on this, so crashing is safer.
     process.exit(1);
 }
+// --- End of Firebase Initialization ---
+
 // --- End of Firebase Initialization ---
 
 

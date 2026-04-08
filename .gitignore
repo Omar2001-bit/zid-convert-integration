@@ -28,3 +28,8 @@ yarn-error.log*
 
 # Thumbnails
 Thumbs.db
+
+# Secrets and Local Configs
+firebase_credentials.json
+zid-convert-integration.env
+.env
