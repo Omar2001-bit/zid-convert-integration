@@ -58,6 +58,10 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             return;
         }
 
+        // Define orderLogPrefix early so it can be used in debug logs
+        const orderLogPrefix = `[ZidOrder ${zidOrder.id}, Cust ${zidOrder.customer?.id || 'GUEST'}]`;
+        const convertGoalId = parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE!, 10);
+
         // --- NEW: Extract convertVisitorId from order notes ---
         let convertVisitorIdFromNotes: string | null = null;
         console.log(`${orderLogPrefix} [DEBUG] Raw order notes received: "${zidOrder.notes}"`); // Debug log
@@ -75,8 +79,6 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             console.log(`${orderLogPrefix} [DEBUG] No valid notes field in order object or not a string`); // Debug log
         }
 
-        const convertGoalId = parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE!, 10);
-        const orderLogPrefix = `[ZidOrder ${zidOrder.id}, Cust ${zidOrder.customer?.id || 'GUEST'}]`;
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
 
         const zidCustomerId = zidOrder.customer?.id?.toString();
