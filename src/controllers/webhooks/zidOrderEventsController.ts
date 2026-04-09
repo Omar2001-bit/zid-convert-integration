@@ -63,9 +63,13 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
 
         const zidCustomerId = zidOrder.customer?.id?.toString();
-        const orderNote = zidOrder.note || '';
         
-        console.log(`${orderLogPrefix} [DEBUG] Raw Order Note: "${orderNote}"`);
+        // Combine all possible note fields from the Zid Payload just in case
+        const orderNote = [zidOrder.note, zidOrder.customer_note, zidOrder.customer?.note]
+            .filter(n => typeof n === 'string' && n.trim() !== '')
+            .join(' | ');
+        
+        console.log(`${orderLogPrefix} [DEBUG] Combined Order Notes: "${orderNote}"`);
         console.log(`${orderLogPrefix} [DEBUG] Zid Customer ID: ${zidCustomerId || 'NONE'}`);
 
         let storedContext: NormalizedBucketingInfo | null | undefined = undefined;
