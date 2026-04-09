@@ -97,5 +97,49 @@ export const getContextByZidCustomerId = async (zidCustomerId: string): Promise<
 
 
 // ===================================================================
-// === END OF FIRESTORE SERVICE                                    ===
+// === NEW HEURISTIC LOOKUP FUNCTION FOR GUEST ATTRIBUTION         ===
 // ===================================================================
+/**
+ * Retrieves the most recent guest context from Firestore based on IP address and timestamp.
+ * This is a heuristic approach for attributing guest checkouts.
+ * @param ipAddress The customer's IP address from the webhook.
+ * @param purchaseTimestamp The timestamp of the order creation.
+ * @returns The StoredBucketingInfo object or null if not found.
+ */
+export const getHeuristicGuestContext = async (ipAddress: string, purchaseTimestamp: Date): Promise<StoredBucketingInfo | null> => {
+  if (!ipAddress) {
+    console.log('DEBUG: No IP address provided for heuristic lookup, returning null.');
+    return null;
+  }
+  try {
+    const db = admin.firestore();
+    
+    // Define a time window (e.g., 5 minutes before the purchase)
+    const windowMinutes = 5;
+    const startTime = new Date(purchaseTimestamp.getTime() - windowMinutes * 60 * 1000);
+
+    // Query for guest contexts (zidCustomerId is null) from the correct IP,
+    // within our time window, and get the most recent one.
+    // NOTE: This query requires a composite index in Firestore to work.
+    const snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
+                              .where('zidCustomerId', '==', null)
+                              .where('ipAddress', '==', ipAddress)
+                              .where('timestamp', '>=', startTime)
+                              .where('timestamp', '<=', purchaseTimestamp)
+                              .orderBy('timestamp', 'desc')
+                              .limit(1)
+                              .get();
+
+    if (!snapshot.empty) {
+      const data = snapshot.docs[0].data() as StoredBucketingInfo;
+      console.log(`DEBUG: Heuristic context FOUND in Firestore by IP ${ipAddress}. Visitor: ${data.convertVisitorId}`);
+      return data;
+    } else {
+      console.log(`DEBUG: Heuristic context NOT FOUND in Firestore for IP ${ipAddress} within the time window.`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`ERROR: Failed to retrieve heuristic context for IP ${ipAddress} from Firestore:`, error instanceof Error ? error.message : error);
+    return null;
+  }
+};

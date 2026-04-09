@@ -223,15 +223,15 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
     }
 };
 
-// --- FIX 2: Added 'export' keyword to make the function available for import ---
-export const getClientIpController = (req: Request, res: Response) => {
-    const clientIp = getClientIp(req);
-    if (clientIp) {
-        res.status(200).json({ ipAddress: clientIp });
-    } else {
-        res.status(500).json({ error: "Could not determine client IP address." });
-    }
-};
+// --- DEPRECATED: IP-based debugging endpoint is no longer needed with cart-note injection strategy ---
+// export const getClientIpController = (req: Request, res: Response) => {
+//     const clientIp = getClientIp(req);
+//     if (clientIp) {
+//         res.status(200).json({ ipAddress: clientIp });
+//     } else {
+//         res.status(500).json({ error: "Could not determine client IP address." });
+//     }
+// };
 
 
 export const ADDITIVE_DIAGNOSTIC_NAMED_EXPORT = "Hello from ADDITIVE_DIAGNOSTIC_NAMED_EXPORT";
