@@ -60,13 +60,19 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
 
         // --- NEW: Extract convertVisitorId from order notes ---
         let convertVisitorIdFromNotes: string | null = null;
+        console.log(`${orderLogPrefix} [DEBUG] Raw order notes received: "${zidOrder.notes}"`); // Debug log
         if (zidOrder.notes && typeof zidOrder.notes === 'string') {
+            console.log(`${orderLogPrefix} [DEBUG] Notes field exists and is string. Length: ${zidOrder.notes.length}`); // Debug log
             // Look for the pattern "convert_cid:XXXXX" in the notes
             const cidMatch = zidOrder.notes.match(/convert_cid:([^\s]+)/);
             if (cidMatch && cidMatch[1]) {
                 convertVisitorIdFromNotes = cidMatch[1];
                 console.log(`[WEBHOOK] Found convertVisitorId in order notes: ${convertVisitorIdFromNotes}`);
+            } else {
+                console.log(`${orderLogPrefix} [DEBUG] No convert_cid pattern found in notes. Full notes: "${zidOrder.notes}"`); // Debug log
             }
+        } else {
+            console.log(`${orderLogPrefix} [DEBUG] No valid notes field in order object or not a string`); // Debug log
         }
 
         const convertGoalId = parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE!, 10);
