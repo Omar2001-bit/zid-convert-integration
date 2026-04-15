@@ -29,12 +29,17 @@
         let convertVisitorId = null;
         try {
             var rawCookieValue = ('; ' + document.cookie).split('; ' + CONVERT_COOKIE_NAME + '=').pop().split(';')[0];
-            if (!rawCookieValue || rawCookieValue === document.cookie) { }
-            else {
+            if (!rawCookieValue || rawCookieValue === document.cookie) {
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] No Convert cookie found.');
+            } else {
                 var decodedCookieValue = decodeURIComponent(rawCookieValue);
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Convert cookie raw value:', decodedCookieValue);
                 var match = decodedCookieValue.match(/^vi:([^~*]+)/) || decodedCookieValue.match(/~v:([^~]+)/);
                 if (match && match[1]) {
                     convertVisitorId = match[1];
+                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Extracted visitor ID from cookie:', convertVisitorId);
+                } else {
+                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Cookie found but no visitor ID pattern matched.');
                 }
             }
         } catch (e) { console.error(SCRIPT_NAMESPACE + ': Error reading Convert cookie.', e); }
@@ -44,6 +49,9 @@
             if (!generatedId) {
                 generatedId = generateUUID();
                 sessionStorage.setItem(SESSION_STORAGE_KEY, generatedId);
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Generated NEW visitor ID:', generatedId);
+            } else {
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Reusing visitor ID from sessionStorage:', generatedId);
             }
             return generatedId;
         }
@@ -51,9 +59,11 @@
     }
 
     function getZidCustomerId() {
-        if (window.customer && window.customer.id) { return window.customer.id.toString(); }
-        if (window.customerHashed && window.customerHashed.external_id) { return window.customerHashed.external_id.toString(); }
-        return null;
+        var id = null;
+        if (window.customer && window.customer.id) { id = window.customer.id.toString(); }
+        else if (window.customerHashed && window.customerHashed.external_id) { id = window.customerHashed.external_id.toString(); }
+        console.log(SCRIPT_NAMESPACE + ': [DEBUG] getZidCustomerId =', id || 'null (guest user)');
+        return id;
     }
 
     // --- CHECKOUT EMAIL/PHONE CAPTURE ---
@@ -90,6 +100,7 @@
         function sendContactUpdate(email, phone) {
             // Only send if we have new data
             if ((!email || email === lastSentEmail) && (!phone || phone === lastSentPhone)) {
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Contact unchanged, skipping send. Email:', email, 'Phone:', phone);
                 return;
             }
 
@@ -109,49 +120,63 @@
                 lastSentPhone = phone;
             }
 
-            console.log(SCRIPT_NAMESPACE + ': [SENDING GUEST CONTACT]', JSON.stringify(payload));
+            console.log('%c' + SCRIPT_NAMESPACE + ': [SENDING GUEST CONTACT] ✓', 'color: green; font-weight: bold;');
+            console.log(SCRIPT_NAMESPACE + ':   → convertVisitorId:', convertVisitorId);
+            console.log(SCRIPT_NAMESPACE + ':   → guestEmail:', payload.guestEmail || '(not updated)');
+            console.log(SCRIPT_NAMESPACE + ':   → guestPhone:', payload.guestPhone || '(not updated)');
+            console.log(SCRIPT_NAMESPACE + ':   → endpoint:', API_ENDPOINT);
+            console.log(SCRIPT_NAMESPACE + ':   → full payload:', JSON.stringify(payload));
             var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-            navigator.sendBeacon(API_ENDPOINT, blob);
+            var sent = navigator.sendBeacon(API_ENDPOINT, blob);
+            console.log(SCRIPT_NAMESPACE + ':   → sendBeacon result:', sent ? 'QUEUED OK' : 'FAILED TO QUEUE');
         }
 
         function attachListeners() {
             var emailFields = document.querySelectorAll(EMAIL_SELECTORS);
             var phoneFields = document.querySelectorAll(PHONE_SELECTORS);
 
+            console.log(SCRIPT_NAMESPACE + ': [DEBUG] Scanning for email fields with selectors:', EMAIL_SELECTORS);
+            console.log(SCRIPT_NAMESPACE + ': [DEBUG] Scanning for phone fields with selectors:', PHONE_SELECTORS);
+            console.log(SCRIPT_NAMESPACE + ': [DEBUG] Found', emailFields.length, 'email field(s) and', phoneFields.length, 'phone field(s)');
+
             emailFields.forEach(function (field) {
                 if (field.dataset.zidConvertBound) return;
                 field.dataset.zidConvertBound = 'true';
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Binding email field → id:', field.id, '| name:', field.name, '| type:', field.type, '| current value:', field.value ? '(has value)' : '(empty)');
                 field.addEventListener('blur', function () {
                     var val = field.value.trim();
+                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Email field blur event → value:', val || '(empty)');
                     if (val && val.includes('@')) {
                         sendContactUpdate(val, null);
                     }
                 });
                 field.addEventListener('change', function () {
                     var val = field.value.trim();
+                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Email field change event → value:', val || '(empty)');
                     if (val && val.includes('@')) {
                         sendContactUpdate(val, null);
                     }
                 });
-                console.log(SCRIPT_NAMESPACE + ': Attached listener to email field:', field.name || field.id || field.type);
             });
 
             phoneFields.forEach(function (field) {
                 if (field.dataset.zidConvertBound) return;
                 field.dataset.zidConvertBound = 'true';
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Binding phone field → id:', field.id, '| name:', field.name, '| type:', field.type, '| current value:', field.value ? '(has value)' : '(empty)');
                 field.addEventListener('blur', function () {
                     var val = field.value.trim();
+                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Phone field blur event → value:', val || '(empty)');
                     if (val && val.length >= 7) {
                         sendContactUpdate(null, val);
                     }
                 });
                 field.addEventListener('change', function () {
                     var val = field.value.trim();
+                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Phone field change event → value:', val || '(empty)');
                     if (val && val.length >= 7) {
                         sendContactUpdate(null, val);
                     }
                 });
-                console.log(SCRIPT_NAMESPACE + ': Attached listener to phone field:', field.name || field.id || field.type);
             });
 
             return emailFields.length + phoneFields.length;
@@ -221,9 +246,15 @@
             zidCustomerId: zidCustomerId
         };
 
-        console.log(SCRIPT_NAMESPACE + ': [SENDING CONTEXT]', JSON.stringify(payload));
+        console.log('%c' + SCRIPT_NAMESPACE + ': [SENDING CONTEXT] ✓', 'color: blue; font-weight: bold;');
+        console.log(SCRIPT_NAMESPACE + ':   → convertVisitorId:', convertVisitorId);
+        console.log(SCRIPT_NAMESPACE + ':   → zidCustomerId:', zidCustomerId || 'null (guest)');
+        console.log(SCRIPT_NAMESPACE + ':   → experiments:', JSON.stringify(experimentsToSend));
+        console.log(SCRIPT_NAMESPACE + ':   → page:', payload.zidPagePath);
+        console.log(SCRIPT_NAMESPACE + ':   → full payload:', JSON.stringify(payload));
         var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-        navigator.sendBeacon(API_ENDPOINT, blob);
+        var sent = navigator.sendBeacon(API_ENDPOINT, blob);
+        console.log(SCRIPT_NAMESPACE + ':   → sendBeacon result:', sent ? 'QUEUED OK' : 'FAILED TO QUEUE');
     }
 
     // --- PERSISTENT ID CHECK ---
@@ -260,12 +291,17 @@
     function isCheckoutPage() {
         var path = window.location.pathname.toLowerCase();
         var search = window.location.search.toLowerCase();
-        return path.includes('checkout') || path.includes('payment') || path.includes('/cart')
+        var result = path.includes('checkout') || path.includes('payment') || path.includes('/cart')
             || (path.includes('/auth/login') && search.includes('checkout'));
+        console.log(SCRIPT_NAMESPACE + ': [DEBUG] isCheckoutPage? path=' + path + ' search=' + search + ' → ' + result);
+        return result;
     }
 
     if (isCheckoutPage()) {
+        console.log('%c' + SCRIPT_NAMESPACE + ': [CHECKOUT PAGE DETECTED]', 'color: orange; font-weight: bold;');
         captureCheckoutContact();
+    } else {
+        console.log(SCRIPT_NAMESPACE + ': [DEBUG] Not a checkout page. Contact capture will activate on navigation to checkout.');
     }
     // Also watch for SPA navigation to checkout
     var lastPath = window.location.pathname.toLowerCase();
