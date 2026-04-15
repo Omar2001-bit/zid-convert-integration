@@ -197,16 +197,43 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         });
 
         // ========================================================================
-        // SEND TO CONVERT
+        // SEND TO CONVERT — two calls:
+        // 1. v1/track for bucketing + goal hit
+        // 2. REST POST tracking for revenue + product count (tr event)
         // ========================================================================
         const visitorPayload: Visitor = {
             visitorId: visitorIdForConvert,
             events: eventsForConvert
         };
 
+        // Collect experience/variation IDs for the transaction call
+        const experienceIds = storedContext?.convertBucketing?.map(b => b.experimentId) || [];
+        const variationIds = storedContext?.convertBucketing?.map(b => b.variationId) || [];
+
+        // Calculate total product count
+        let totalProductsCount = 0;
+        if (zidOrder.products && Array.isArray(zidOrder.products)) {
+            totalProductsCount = zidOrder.products.reduce((sum: number, p: ZidProduct) => {
+                return sum + (parseInt(String(p.quantity), 10) || 0);
+            }, 0);
+        }
+
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to Convert v1/track API ---`);
         await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
-        console.log(`--- ${orderLogPrefix} [WEBHOOK] Convert API call complete ---`);
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] v1/track API call complete ---`);
+
+        // Send transaction data via REST POST tracking endpoint
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending transaction data via REST POST tracking ---`);
+        console.log(`${orderLogPrefix} Revenue: ${revenueForConvertAPI} SAR, Products count: ${totalProductsCount}`);
+        await ConvertApiService.sendTrackingWithTransaction({
+            visitorId: visitorIdForConvert,
+            experienceIds,
+            variationIds,
+            goalId: convertGoalId,
+            revenue: revenueForConvertAPI,
+            productsCount: totalProductsCount
+        });
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] REST POST tracking call complete ---`);
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing complete ---`);
 
     } catch (error) {
