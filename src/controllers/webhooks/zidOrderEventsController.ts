@@ -86,6 +86,28 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             console.log(`${orderLogPrefix} [DEBUG] No valid notes field in order object or not a string`); // Debug log
         }
 
+        // --- MODIFIED: Extract convertVisitorId from customer_note field ---
+        // This is where the modified script injects the UUID
+        let convertVisitorIdFromCustomerNote: string | null = null;
+        if (zidOrder.customer_note && typeof zidOrder.customer_note === 'string') {
+            console.log(`${orderLogPrefix} [DEBUG] Customer note received: "${zidOrder.customer_note}"`); // Debug log
+            const cidMatch = zidOrder.customer_note.match(/convert_cid:([^\s]+)/);
+            if (cidMatch && cidMatch[1]) {
+                convertVisitorIdFromCustomerNote = cidMatch[1];
+                console.log(`[WEBHOOK] Found convertVisitorId in customer_note: ${convertVisitorIdFromCustomerNote}`);
+            } else {
+                console.log(`${orderLogPrefix} [DEBUG] No convert_cid pattern found in customer_note. Full note: "${zidOrder.customer_note}"`); // Debug log
+            }
+        } else {
+            console.log(`${orderLogPrefix} [DEBUG] No customer_note field in order object`); // Debug log
+        }
+
+        // --- Use customer_note UUID if available, otherwise fall back to notes UUID ---
+        if (convertVisitorIdFromCustomerNote) {
+            convertVisitorIdFromNotes = convertVisitorIdFromCustomerNote;
+            console.log(`[WEBHOOK] Using convertVisitorId from customer_note: ${convertVisitorIdFromNotes}`);
+        }
+
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
 
         const zidCustomerId = zidOrder.customer?.id?.toString();
