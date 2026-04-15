@@ -4,6 +4,7 @@ import {
     captureConvertContextController,
     handlePurchaseSignalController
 } from '../../controllers/api/convertContextController';
+import { handleCustomerNoteUpdate } from '../../controllers/api/customerNotesController';
 
 const router = Router();
 
@@ -12,6 +13,9 @@ router.post('/capture-convert-context', captureConvertContextController);
 
 // Endpoint for client-side JS to signal a purchase
 router.post('/signal-purchase', handlePurchaseSignalController);
+
+// Endpoint for client-side JS to update customer notes (appears in webhooks)
+router.post('/api/customer-notes', handleCustomerNoteUpdate);
 
 // TEST ENDPOINT: Verify context was stored (call this from browser console)
 router.get('/test/verify-context', async (req, res) => {
