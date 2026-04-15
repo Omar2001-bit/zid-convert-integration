@@ -36,7 +36,7 @@ router.get('/test/verify-context', async (req, res) => {
                 message: `Context NOT found for convertVisitorId: ${convertVisitorId}`
             });
         }
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: error.message });
     }
 });
