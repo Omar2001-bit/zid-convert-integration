@@ -66,6 +66,31 @@
         return id;
     }
 
+    function getActiveExperiments() {
+        var experiments = [];
+        try {
+            var convertExperiments = window.convert && window.convert.currentData && window.convert.currentData.experiences;
+            if (convertExperiments && Object.keys(convertExperiments).length > 0) {
+                var experimentIds = Object.keys(convertExperiments);
+                for (var i = 0; i < experimentIds.length; i++) {
+                    var expId = experimentIds[i];
+                    if (convertExperiments[expId] && convertExperiments[expId].variation && convertExperiments[expId].variation.id) {
+                        experiments.push({
+                            experienceId: String(expId),
+                            variationId: String(convertExperiments[expId].variation.id)
+                        });
+                    }
+                }
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Found', experiments.length, 'active experiment(s) via Convert API');
+            } else {
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] window.convert.currentData.experiences is empty');
+            }
+        } catch (e) {
+            console.error(SCRIPT_NAMESPACE + ': Error reading experiments:', e);
+        }
+        return experiments;
+    }
+
     // --- CHECKOUT EMAIL/PHONE CAPTURE ---
     // Monitors checkout form fields to capture guest contact info.
     // This links the frontend convertVisitorId to the guest's email/phone,
@@ -201,39 +226,14 @@
         }
     }
 
-    // --- THE MAIN HANDLER ---
-    function handleExperiencesEvaluated() {
-        if (hasBeenCalled) return;
-        hasBeenCalled = true;
-
+    // --- SEND CONTEXT TO BACKEND ---
+    function sendContext() {
         var convertVisitorId = getOrCreateConvertVisitorId();
+        var experimentsToSend = getActiveExperiments();
 
-        try {
-            window._conv_q = window._conv_q || [];
-            window._conv_q.push({
-                what: 'identify',
-                params: { visitorId: convertVisitorId }
-            });
-            console.log(SCRIPT_NAMESPACE + ': Executed Convert.identify with visitorId:', convertVisitorId);
-        } catch (e) {
-            console.error(SCRIPT_NAMESPACE + ': Error calling Convert.identify:', e);
+        if (experimentsToSend.length === 0) {
+            return false;
         }
-
-        var convertExperiments = window.convert.currentData.experiences;
-        if (!convertExperiments || Object.keys(convertExperiments).length === 0) return;
-
-        var experimentsToSend = [];
-        var experimentIds = Object.keys(convertExperiments);
-        for (var i = 0; i < experimentIds.length; i++) {
-            var expId = experimentIds[i];
-            if (convertExperiments[expId] && convertExperiments[expId].variation && convertExperiments[expId].variation.id) {
-                experimentsToSend.push({
-                    experienceId: String(expId),
-                    variationId: String(convertExperiments[expId].variation.id)
-                });
-            }
-        }
-        if (experimentsToSend.length === 0) return;
 
         var zidCustomerId = getZidCustomerId();
         lastKnownZidCustomerId = zidCustomerId;
@@ -254,6 +254,55 @@
         var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
         var sent = navigator.sendBeacon(API_ENDPOINT, blob);
         console.log(SCRIPT_NAMESPACE + ':   → sendBeacon result:', sent ? 'QUEUED OK' : 'FAILED TO QUEUE');
+        return true;
+    }
+
+    // --- THE MAIN HANDLER ---
+    var contextSent = false;
+
+    function handleExperiencesEvaluated() {
+        if (contextSent) return;
+
+        var convertVisitorId = getOrCreateConvertVisitorId();
+
+        try {
+            window._conv_q = window._conv_q || [];
+            window._conv_q.push({
+                what: 'identify',
+                params: { visitorId: convertVisitorId }
+            });
+            console.log(SCRIPT_NAMESPACE + ': Executed Convert.identify with visitorId:', convertVisitorId);
+        } catch (e) {
+            console.error(SCRIPT_NAMESPACE + ': Error calling Convert.identify:', e);
+        }
+
+        // Try to send immediately
+        if (sendContext()) {
+            contextSent = true;
+            return;
+        }
+
+        // Experiments may not be populated yet — poll every 500ms for up to 10 seconds
+        console.log(SCRIPT_NAMESPACE + ': [DEBUG] No experiments yet. Polling for Convert data...');
+        var attempts = 0;
+        var maxAttempts = 20;
+        var pollInterval = setInterval(function () {
+            attempts++;
+            if (contextSent) {
+                clearInterval(pollInterval);
+                return;
+            }
+            if (sendContext()) {
+                contextSent = true;
+                clearInterval(pollInterval);
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Context sent after', attempts, 'poll attempt(s)');
+                return;
+            }
+            if (attempts >= maxAttempts) {
+                clearInterval(pollInterval);
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Gave up polling after', maxAttempts, 'attempts. No experiments found on this page.');
+            }
+        }, 500);
     }
 
     // --- PERSISTENT ID CHECK ---
