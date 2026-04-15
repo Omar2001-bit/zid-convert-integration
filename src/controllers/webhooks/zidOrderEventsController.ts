@@ -2,7 +2,7 @@
 import { Request, Response } from 'express';
 import { ConvertApiService, Event, Visitor, Product as ConvertProductType } from '../../services/convert-service';
 import { CurrencyService } from '../../services/currency-service';
-import { getContextByConvertVisitorId, getContextByZidCustomerId, getHeuristicGuestContext } from '../../services/firestore-service';
+import { getContextByConvertVisitorId, getContextByZidCustomerId, getHeuristicGuestContext, getContextByZidOrderId } from '../../services/firestore-service';
 import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry, ZidProduct, NormalizedBucketingInfo } from '../../types/index';
 import { getStoredClientContext as getInMemoryContext, StoredBucketingInfo as InMemoryStoredBucketingInfo } from '../api/convertContextController';
 import * as admin from 'firebase-admin';
@@ -10,13 +10,20 @@ import * as admin from 'firebase-admin';
 const TARGET_REPORTING_CURRENCY = 'SAR';
 
 function getClientIpFromWebhook(req: Request): string | undefined {
-    const ipHeaders = ['x-forwarded-for', 'x-real-ip', 'true-client-ip'];
+    const ipHeaders = ['x-forwarded-for', 'x-real-ip', 'true-client-ip', 'cf-connecting-ip', 'x-client-ip'];
     for (const header of ipHeaders) {
         const ip = req.headers[header];
         if (typeof ip === 'string') {
-            return ip.split(',')[0].trim();
+            // x-forwarded-for can contain multiple IPs: "client, proxy1, proxy2"
+            // Take the first (leftmost) IP which is the original client
+            const firstIp = ip.split(',')[0].trim();
+            // Validate it looks like an IP address (basic check)
+            if (firstIp && (firstIp.includes('.') || firstIp.includes(':'))) {
+                return firstIp;
+            }
         }
     }
+    // Fallback to Express's req.ip or socket remote address
     return req.ip || req.socket.remoteAddress;
 }
 
@@ -64,39 +71,16 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
 
         // --- NEW: Extract convertVisitorId from order notes ---
         let convertVisitorIdFromNotes: string | null = null;
-
-        // Check multiple possible note fields that Zid might use
-        const possibleNoteFields = ['notes', 'customer_note', 'order_note', 'admin_note'];
-        let foundNotesField = null;
-        let foundNotesValue = null;
-
-        for (const field of possibleNoteFields) {
-            if (zidOrder[field] && typeof zidOrder[field] === 'string') {
-                foundNotesField = field;
-                foundNotesValue = zidOrder[field];
-                console.log(`${orderLogPrefix} [DEBUG] Found note field '${field}': "${foundNotesValue}"`);
-                break;
-            }
-        }
-
-        // If no specific note field found, log all fields that might contain notes
-        if (!foundNotesField) {
-            console.log(`${orderLogPrefix} [DEBUG] No standard note fields found. Checking all string fields for convert_cid...`);
-            // Log the entire order object structure for debugging
-            const orderKeys = Object.keys(zidOrder);
-            console.log(`${orderLogPrefix} [DEBUG] Order top-level fields: ${JSON.stringify(orderKeys)}`);
-        }
-
-        if (foundNotesValue) {
-            console.log(`${orderLogPrefix} [DEBUG] Raw order notes received from field '${foundNotesField}': "${foundNotesValue}"`); // Debug log
-            console.log(`${orderLogPrefix} [DEBUG] Notes field exists and is string. Length: ${foundNotesValue.length}`); // Debug log
+        console.log(`${orderLogPrefix} [DEBUG] Raw order notes received: "${zidOrder.notes}"`); // Debug log
+        if (zidOrder.notes && typeof zidOrder.notes === 'string') {
+            console.log(`${orderLogPrefix} [DEBUG] Notes field exists and is string. Length: ${zidOrder.notes.length}`); // Debug log
             // Look for the pattern "convert_cid:XXXXX" in the notes
-            const cidMatch = foundNotesValue.match(/convert_cid:([^\s]+)/);
+            const cidMatch = zidOrder.notes.match(/convert_cid:([^\s]+)/);
             if (cidMatch && cidMatch[1]) {
                 convertVisitorIdFromNotes = cidMatch[1];
                 console.log(`[WEBHOOK] Found convertVisitorId in order notes: ${convertVisitorIdFromNotes}`);
             } else {
-                console.log(`${orderLogPrefix} [DEBUG] No convert_cid pattern found in notes. Full notes: "${foundNotesValue}"`); // Debug log
+                console.log(`${orderLogPrefix} [DEBUG] No convert_cid pattern found in notes. Full notes: "${zidOrder.notes}"`); // Debug log
             }
         } else {
             console.log(`${orderLogPrefix} [DEBUG] No valid notes field in order object or not a string`); // Debug log
@@ -168,6 +152,26 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                     timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
                     zidPagePath: firestoreData.zidPagePath
                 };
+            }
+        }
+
+        // --- PATH 3: ORDER ID LOOKUP (FALLBACK FOR GUESTS) ---
+        // Try looking up by order ID if still no context found (from /api/signal-purchase)
+        if (!storedContext && zidOrder.id) {
+            console.log(`${orderLogPrefix} [WEBHOOK] Attempting order ID lookup as fallback.`);
+            const firestoreData = await getContextByZidOrderId(String(zidOrder.id));
+            if (firestoreData) {
+                attributionSource = 'Firestore (by zidOrderId)';
+                storedContext = {
+                    convertVisitorId: firestoreData.convertVisitorId,
+                    zidCustomerId: firestoreData.zidCustomerId ?? undefined,
+                    convertBucketing: firestoreData.convertBucketing.map(b => ({ experimentId: String(b.experienceId), variationId: String(b.variationId) })),
+                    timestamp: (firestoreData.timestamp instanceof admin.firestore.Timestamp) ? firestoreData.timestamp.toMillis() : (firestoreData.timestamp as number),
+                    zidPagePath: firestoreData.zidPagePath
+                };
+                console.log(`${orderLogPrefix} [WEBHOOK] Found context by order ID: ${zidOrder.id}. Visitor: ${storedContext.convertVisitorId}`);
+            } else {
+                console.log(`${orderLogPrefix} [WEBHOOK] No context found by order ID.`);
             }
         }
 

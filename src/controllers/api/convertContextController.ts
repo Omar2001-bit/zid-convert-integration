@@ -10,6 +10,8 @@ interface ConvertClientContextPayload {
     convertVisitorId?: string | null;
     convertBucketing?: Array<{ experienceId?: string; variationId?: string; }>;
     zidCustomerId?: string | null;
+    guestEmail?: string | null;      // NEW: For guest checkout attribution
+    guestPhone?: string | null;      // NEW: For guest checkout attribution
 }
 
 // This local interface is for the in-memory store.
@@ -159,7 +161,8 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
                         variationId: parseInt(b.variationId)
                     })),
                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                    zidPagePath: undefined
+                    zidPagePath: undefined,
+                    zidOrderId: payload.zidOrderId
                 };
                 await saveContext(infoToStoreForFirestore);
                 console.log(`Purchase signal: Stored FIRESTORE experiment context for convertVisitorId '${payload.convertVisitorId}' for Zid Order ID '${payload.zidOrderId}'.`);

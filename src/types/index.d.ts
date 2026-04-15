@@ -15,11 +15,14 @@ export interface StoredConvertBucketingEntry {
 export interface StoredBucketingInfo {
   convertVisitorId: string; // This will be the document ID in Firestore
   zidCustomerId?: string | null; // Optional Zid customer ID, stored for lookup
-  ipAddress?: string | null; // MODIFIED: Added field for heuristic matching
+  ipAddress?: string | null; // Added for heuristic matching
   convertBucketing: StoredConvertBucketingEntry[]; // Array of experiments and variations with numeric IDs
   // Timestamp can be a Firestore FieldValue (for writes), a Timestamp object (for reads), or a number (for in-memory compatibility)
-  timestamp: admin.firestore.FieldValue | admin.firestore.Timestamp | number; 
+  timestamp: admin.firestore.FieldValue | admin.firestore.Timestamp | number;
   zidPagePath?: string; // Optional page path where context was captured
+  zidOrderId?: string | null; // Optional Zid order ID, stored for lookup (from /api/signal-purchase)
+  guestEmail?: string | null; // Guest customer email, for lookup when cart-note injection fails
+  guestPhone?: string | null; // Guest customer phone, for lookup when cart-note injection fails
 }
 
 // NEW: A normalized interface for bucketing information after retrieval,
