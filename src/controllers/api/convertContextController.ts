@@ -100,22 +100,27 @@ export const captureConvertContextController = async (req: Request, res: Respons
         }
         clientContextStore[convertVisitorId] = infoToStoreInMemory as any;
 
-        const infoToStoreForFirestore: FirestoreStoredBucketingInfo = {
+        const infoToStoreForFirestore: Partial<FirestoreStoredBucketingInfo> & { convertVisitorId: string } = {
             convertVisitorId: convertVisitorId,
-            zidCustomerId: zidCustomerId ?? null, 
+            zidCustomerId: zidCustomerId ?? null,
             ipAddress: clientIp ?? null,
-            convertBucketing: bucketingToStore.map((b): StoredConvertBucketingEntry => ({
-                experienceId: parseInt(b.experimentId), 
-                variationId: parseInt(b.variationId)    
-            })),
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             zidPagePath: zidPagePath,
             guestEmail: guestEmail ?? null,
             guestPhone: guestPhone ?? null,
         };
 
-        await saveContext(infoToStoreForFirestore);
-        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' | zidCustomerId: '${zidCustomerId || 'N/A'}' | IP: '${clientIp || 'N/A'}'`);
+        // Only include convertBucketing if we actually have experiment data
+        // This prevents contact-only updates from overwriting existing bucketing
+        if (bucketingToStore.length > 0) {
+            (infoToStoreForFirestore as FirestoreStoredBucketingInfo).convertBucketing = bucketingToStore.map((b): StoredConvertBucketingEntry => ({
+                experienceId: parseInt(b.experimentId),
+                variationId: parseInt(b.variationId)
+            }));
+        }
+
+        await saveContext(infoToStoreForFirestore as FirestoreStoredBucketingInfo);
+        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' | zidCustomerId: '${zidCustomerId || 'N/A'}' | guestEmail: '${guestEmail || 'N/A'}' | guestPhone: '${guestPhone || 'N/A'}'`);
         
         res.status(200).json({ message: "Convert context received and stored successfully." });
 

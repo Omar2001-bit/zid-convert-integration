@@ -107,7 +107,6 @@
             var payload = {
                 convertVisitorId: convertVisitorId,
                 zidCustomerId: null,
-                convertBucketing: [],
                 zidPagePath: document.location.pathname + document.location.search
             };
 
