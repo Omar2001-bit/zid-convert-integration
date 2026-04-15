@@ -1,11 +1,11 @@
-// == Zid-Convert Integration Script v64.1 - Enhanced Cart-Note Attribution ==
-// MODIFIED: Now injects UUID into BOTH cart notes AND customer notes
-// This ensures the UUID appears in webhook payloads
+// == Zid-Convert Integration Script v65.0 - Email/Phone Guest Attribution ==
+// Guest users are tracked by capturing email/phone at checkout
+// Logged-in users are tracked via zidCustomerId
 (function (window, document) {
     'use strict';
 
     var SCRIPT_NAMESPACE = 'ZidConvertTracker';
-    console.log(SCRIPT_NAMESPACE + ': Enhanced Cart-Note Attribution Script (v64.1) initialized.');
+    console.log(SCRIPT_NAMESPACE + ': Email/Phone Guest Attribution Script (v65.0) initialized.');
 
     // --- Configuration ---
     var API_ENDPOINT = 'https://zid-convert-integration.onrender.com/api/capture-convert-context';
@@ -13,6 +13,8 @@
     var SESSION_STORAGE_KEY = SCRIPT_NAMESPACE + '_generated_visitor_id';
     var hasBeenCalled = false;
     var lastKnownZidCustomerId = null;
+    var lastSentEmail = null;
+    var lastSentPhone = null;
 
     // --- UTILITY FUNCTIONS ---
     function generateUUID() {
@@ -54,55 +56,124 @@
         return null;
     }
 
-    /**
-     * MODIFIED: Injects UUID into BOTH cart notes AND customer notes
-     * This ensures the ID appears in webhook payloads
-     */
-    function syncCidToZidCart(cid) {
-        try {
-            var headers = {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest'
-            };
+    // --- CHECKOUT EMAIL/PHONE CAPTURE ---
+    // Monitors checkout form fields to capture guest contact info.
+    // This links the frontend convertVisitorId to the guest's email/phone,
+    // which also appears in the Zid webhook payload for matching.
+    function captureCheckoutContact() {
+        var convertVisitorId = getOrCreateConvertVisitorId();
+        var zidCustomerId = getZidCustomerId();
 
-            // Laravel / Zid CSRF Protection
-            var csrfMeta = document.querySelector('meta[name="csrf-token"]');
-            if (csrfMeta) {
-                headers['X-CSRF-TOKEN'] = csrfMeta.getAttribute('content');
-            } else {
-                var xsrfToken = ('; ' + document.cookie).split('; XSRF-TOKEN=').pop().split(';')[0];
-                if (xsrfToken) {
-                    headers['X-XSRF-TOKEN'] = decodeURIComponent(xsrfToken);
-                }
+        // Skip for logged-in users — they are tracked by zidCustomerId
+        if (zidCustomerId) {
+            console.log(SCRIPT_NAMESPACE + ': Logged-in user on checkout, skipping contact capture.');
+            return;
+        }
+
+        console.log(SCRIPT_NAMESPACE + ': Guest user on checkout page. Monitoring for email/phone fields.');
+
+        // Zid checkout form selectors (inside .login_guest-container)
+        var EMAIL_SELECTORS = [
+            '#inputEmail',
+            'input[name="email"]',
+            'input[type="email"]',
+            '.login_guest-container input[id*="email"]'
+        ].join(',');
+
+        var PHONE_SELECTORS = [
+            '#mobile',
+            'input[name="mobile"]',
+            'input[type="tel"]',
+            '.login_guest-container input[id*="mobile"]'
+        ].join(',');
+
+        function sendContactUpdate(email, phone) {
+            // Only send if we have new data
+            if ((!email || email === lastSentEmail) && (!phone || phone === lastSentPhone)) {
+                return;
             }
 
-            // 1. Inject into Zid Cart Note (original method)
-            fetch('/cart/update-note', {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify({ note: 'convert_cid:' + cid })
-            }).then(function (res) {
-                if (res.ok) {
-                    console.log(SCRIPT_NAMESPACE + ': [SUCCESS] CID synced to Zid Cart Note.');
-                }
-            }).catch(function (err) {
-                console.warn(SCRIPT_NAMESPACE + ': [WARN] Failed to sync CID to cart note. Webhook fallback will be used.');
+            var payload = {
+                convertVisitorId: convertVisitorId,
+                zidCustomerId: null,
+                convertBucketing: [],
+                zidPagePath: document.location.pathname + document.location.search
+            };
+
+            if (email && email !== lastSentEmail) {
+                payload.guestEmail = email;
+                lastSentEmail = email;
+            }
+            if (phone && phone !== lastSentPhone) {
+                payload.guestPhone = phone;
+                lastSentPhone = phone;
+            }
+
+            console.log(SCRIPT_NAMESPACE + ': [SENDING GUEST CONTACT]', JSON.stringify(payload));
+            var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+            navigator.sendBeacon(API_ENDPOINT, blob);
+        }
+
+        function attachListeners() {
+            var emailFields = document.querySelectorAll(EMAIL_SELECTORS);
+            var phoneFields = document.querySelectorAll(PHONE_SELECTORS);
+
+            emailFields.forEach(function (field) {
+                if (field.dataset.zidConvertBound) return;
+                field.dataset.zidConvertBound = 'true';
+                field.addEventListener('blur', function () {
+                    var val = field.value.trim();
+                    if (val && val.includes('@')) {
+                        sendContactUpdate(val, null);
+                    }
+                });
+                field.addEventListener('change', function () {
+                    var val = field.value.trim();
+                    if (val && val.includes('@')) {
+                        sendContactUpdate(val, null);
+                    }
+                });
+                console.log(SCRIPT_NAMESPACE + ': Attached listener to email field:', field.name || field.id || field.type);
             });
 
-            // 2. MODIFIED: Inject into Customer Note (appears in webhooks)
-            fetch('/api/customer-notes', {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify({ customer_note: 'convert_cid:' + cid })
-            }).then(function (res) {
-                if (res.ok) {
-                    console.log(SCRIPT_NAMESPACE + ': [SUCCESS] CID synced to customer note.');
-                }
-            }).catch(function (err) {
-                console.warn(SCRIPT_NAMESPACE + ': [WARN] Failed to sync CID to customer note.');
+            phoneFields.forEach(function (field) {
+                if (field.dataset.zidConvertBound) return;
+                field.dataset.zidConvertBound = 'true';
+                field.addEventListener('blur', function () {
+                    var val = field.value.trim();
+                    if (val && val.length >= 7) {
+                        sendContactUpdate(null, val);
+                    }
+                });
+                field.addEventListener('change', function () {
+                    var val = field.value.trim();
+                    if (val && val.length >= 7) {
+                        sendContactUpdate(null, val);
+                    }
+                });
+                console.log(SCRIPT_NAMESPACE + ': Attached listener to phone field:', field.name || field.id || field.type);
             });
-        } catch (e) {
-            console.error(SCRIPT_NAMESPACE + ': Exception during cart sync.', e);
+
+            return emailFields.length + phoneFields.length;
+        }
+
+        // Try attaching immediately
+        var found = attachListeners();
+
+        // Use MutationObserver to catch dynamically-rendered checkout forms
+        if (found === 0) {
+            console.log(SCRIPT_NAMESPACE + ': No checkout fields found yet. Watching for dynamic form rendering.');
+            var observer = new MutationObserver(function () {
+                var newFound = attachListeners();
+                if (newFound > 0) {
+                    console.log(SCRIPT_NAMESPACE + ': Checkout fields found via MutationObserver.');
+                    observer.disconnect();
+                }
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            // Stop watching after 30 seconds to avoid performance impact
+            setTimeout(function () { observer.disconnect(); }, 30000);
         }
     }
 
@@ -112,9 +183,6 @@
         hasBeenCalled = true;
 
         var convertVisitorId = getOrCreateConvertVisitorId();
-
-        // --- Sync to Zid Cart immediately after CID is identified ---
-        syncCidToZidCart(convertVisitorId);
 
         try {
             window._conv_q = window._conv_q || [];
@@ -185,5 +253,30 @@
 
     setInterval(checkForLogin, 3000);
     console.log(SCRIPT_NAMESPACE + ': Started polling for customer login state.');
+
+    // --- CHECKOUT CONTACT CAPTURE ---
+    // Detect checkout pages and start monitoring email/phone fields
+    // Zid guest checkout is at /auth/login?redirect_to=/checkout/...
+    function isCheckoutPage() {
+        var path = window.location.pathname.toLowerCase();
+        var search = window.location.search.toLowerCase();
+        return path.includes('checkout') || path.includes('payment') || path.includes('/cart')
+            || (path.includes('/auth/login') && search.includes('checkout'));
+    }
+
+    if (isCheckoutPage()) {
+        captureCheckoutContact();
+    }
+    // Also watch for SPA navigation to checkout
+    var lastPath = window.location.pathname.toLowerCase();
+    setInterval(function () {
+        var currentPath = window.location.pathname.toLowerCase();
+        if (currentPath !== lastPath) {
+            lastPath = currentPath;
+            if (isCheckoutPage()) {
+                captureCheckoutContact();
+            }
+        }
+    }, 2000);
 
 })(window, document);

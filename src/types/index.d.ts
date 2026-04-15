@@ -21,8 +21,10 @@ export interface StoredBucketingInfo {
   timestamp: admin.firestore.FieldValue | admin.firestore.Timestamp | number;
   zidPagePath?: string; // Optional page path where context was captured
   zidOrderId?: string | null; // Optional Zid order ID, stored for lookup (from /api/signal-purchase)
-  guestEmail?: string | null; // Guest customer email, for lookup when cart-note injection fails
-  guestPhone?: string | null; // Guest customer phone, for lookup when cart-note injection fails
+  guestEmail?: string | null; // Guest customer email, for checkout-based attribution
+  guestPhone?: string | null; // Guest customer phone, for checkout-based attribution
+  consumed?: boolean; // Whether this context has been used for a conversion
+  consumedAt?: admin.firestore.FieldValue | admin.firestore.Timestamp | number;
 }
 
 // NEW: A normalized interface for bucketing information after retrieval,

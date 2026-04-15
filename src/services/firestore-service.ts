@@ -19,6 +19,7 @@ export const saveContext = async (context: StoredBucketingInfo): Promise<void> =
     const db = admin.firestore();
     const contextToSave = {
       ...context,
+      consumed: context.consumed ?? false,
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     };
 
@@ -268,5 +269,60 @@ export const getHeuristicGuestContext = async (ipAddress: string, purchaseTimest
   } catch (error) {
     console.error(`ERROR: Failed to retrieve heuristic context for IP ${ipAddress} from Firestore:`, error instanceof Error ? error.message : error);
     return null;
+  }
+};
+
+/**
+ * Retrieves the newest unconsumed guest context from Firestore.
+ * Fallback method when email/phone matching fails.
+ * @param maxAgeMinutes Maximum age of context in minutes (default 30).
+ * @returns The StoredBucketingInfo object or null if not found.
+ */
+export const getNewestGuestContext = async (maxAgeMinutes: number = 30): Promise<StoredBucketingInfo | null> => {
+  try {
+    const db = admin.firestore();
+    const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+
+    console.log(`DEBUG: Looking up newest unconsumed guest context (max age: ${maxAgeMinutes}min, cutoff: ${cutoff.toISOString()})`);
+
+    const snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
+                              .where('zidCustomerId', '==', null)
+                              .where('consumed', '==', false)
+                              .where('timestamp', '>=', cutoff)
+                              .orderBy('timestamp', 'desc')
+                              .limit(1)
+                              .get();
+
+    if (!snapshot.empty) {
+      const data = snapshot.docs[0].data() as StoredBucketingInfo;
+      console.log(`DEBUG: Newest guest context FOUND. Visitor: ${data.convertVisitorId}`);
+      return data;
+    }
+
+    console.log(`DEBUG: No unconsumed guest context found within ${maxAgeMinutes} minutes.`);
+    return null;
+  } catch (error) {
+    console.error(`ERROR: Failed to retrieve newest guest context from Firestore:`, error instanceof Error ? error.message : error);
+    return null;
+  }
+};
+
+/**
+ * Marks a context document as consumed to prevent double-attribution.
+ * @param convertVisitorId The document ID to mark as consumed.
+ */
+export const markContextConsumed = async (convertVisitorId: string): Promise<void> => {
+  if (!convertVisitorId) return;
+  try {
+    const db = admin.firestore();
+    await db.collection(CONVERSION_CONTEXT_COLLECTION)
+            .doc(convertVisitorId)
+            .update({
+              consumed: true,
+              consumedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+    console.log(`DEBUG: Context marked as consumed for visitor: ${convertVisitorId}`);
+  } catch (error) {
+    console.error(`ERROR: Failed to mark context as consumed for ${convertVisitorId}:`, error instanceof Error ? error.message : error);
   }
 };

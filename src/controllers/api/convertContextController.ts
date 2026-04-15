@@ -60,7 +60,7 @@ export const captureConvertContextController = async (req: Request, res: Respons
             contextData = req.body as ConvertClientContextPayload;
         }
         
-        const { zidCustomerId, convertVisitorId, convertBucketing, zidPagePath } = contextData;
+        const { zidCustomerId, convertVisitorId, convertBucketing, zidPagePath, guestEmail, guestPhone } = contextData;
 
         if (!convertVisitorId) {
             console.warn("/api/capture-convert-context: No convertVisitorId provided. Cannot store context.");
@@ -109,9 +109,11 @@ export const captureConvertContextController = async (req: Request, res: Respons
                 variationId: parseInt(b.variationId)    
             })),
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            zidPagePath: zidPagePath
+            zidPagePath: zidPagePath,
+            guestEmail: guestEmail ?? null,
+            guestPhone: guestPhone ?? null,
         };
-        
+
         await saveContext(infoToStoreForFirestore);
         console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' | zidCustomerId: '${zidCustomerId || 'N/A'}' | IP: '${clientIp || 'N/A'}'`);
         
@@ -128,6 +130,7 @@ interface PurchaseSignalPayload {
     convertVisitorId: string | null;
     experiments: Array<{ experimentId: string; variationId: string; }>;
     zidOrderId?: string | null;
+    zidCustomerId?: string | null;
 }
 
 export const handlePurchaseSignalController = async (req: Request, res: Response) => {
@@ -162,7 +165,8 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
                     })),
                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
                     zidPagePath: undefined,
-                    zidOrderId: payload.zidOrderId
+                    zidOrderId: payload.zidOrderId,
+                    zidCustomerId: payload.zidCustomerId
                 };
                 await saveContext(infoToStoreForFirestore);
                 console.log(`Purchase signal: Stored FIRESTORE experiment context for convertVisitorId '${payload.convertVisitorId}' for Zid Order ID '${payload.zidOrderId}'.`);
