@@ -107,19 +107,64 @@
 
         console.log(SCRIPT_NAMESPACE + ': Guest user on checkout page. Monitoring for email/phone fields.');
 
-        // Zid checkout form selectors (inside .login_guest-container)
+        // =====================================================================
+        // *** STORE-SPECIFIC: EMAIL FIELD CSS SELECTORS ***
+        //
+        // HOW TO FIND THE CORRECT SELECTORS FOR A NEW STORE:
+        //   1. Go to the store's checkout page as a guest user
+        //   2. Right-click on the EMAIL input field and click "Inspect"
+        //   3. In DevTools, look at the <input> element's attributes:
+        //      - If it has id="someId"        -> use '#someId'
+        //      - If it has name="someName"    -> use 'input[name="someName"]'
+        //      - If it has class="someClass"  -> use '.someClass'
+        //      - If it is inside a container  -> use '.containerClass input[type="email"]'
+        //   4. Replace the selectors below with the ones matching this store
+        //
+        // WHAT TO CHANGE: Replace the strings inside the array [ ] below.
+        //   Each string is a CSS selector that targets the email input field.
+        //   You can have multiple selectors as fallbacks (separated by commas).
+        //   The script tries ALL selectors and uses whichever matches first.
+        //
+        // EXAMPLE: If the store's email field is <input id="guest_email" name="user_email">
+        //   Change the array to: ['#guest_email', 'input[name="user_email"]']
+        //
+        // CURRENT VALUES ARE FOR: Default Zid theme (regal-honey.com)
+        // =====================================================================
         var EMAIL_SELECTORS = [
-            '#inputEmail',
-            'input[name="email"]',
-            'input[type="email"]',
-            '.login_guest-container input[id*="email"]'
+            '#inputEmail',                                      // <- Zid default email field ID
+            'input[name="email"]',                              // <- fallback: any input named "email"
+            'input[type="email"]',                              // <- fallback: any input of type email
+            '.login_guest-container input[id*="email"]'         // <- Zid default: email inside guest login form container
         ].join(',');
 
+        // =====================================================================
+        // *** STORE-SPECIFIC: PHONE FIELD CSS SELECTORS ***
+        //
+        // HOW TO FIND THE CORRECT SELECTORS FOR A NEW STORE:
+        //   1. Go to the store's checkout page as a guest user
+        //   2. Right-click on the PHONE/MOBILE input field and click "Inspect"
+        //   3. In DevTools, look at the <input> element's attributes:
+        //      - If it has id="someId"        -> use '#someId'
+        //      - If it has name="someName"    -> use 'input[name="someName"]'
+        //      - If it has class="someClass"  -> use '.someClass'
+        //      - If it is inside a container  -> use '.containerClass input[type="tel"]'
+        //   4. Replace the selectors below with the ones matching this store
+        //
+        // WHAT TO CHANGE: Replace the strings inside the array [ ] below.
+        //   Each string is a CSS selector that targets the phone input field.
+        //   You can have multiple selectors as fallbacks (separated by commas).
+        //   The script tries ALL selectors and uses whichever matches first.
+        //
+        // EXAMPLE: If the store's phone field is <input id="phone_number" name="tel">
+        //   Change the array to: ['#phone_number', 'input[name="tel"]']
+        //
+        // CURRENT VALUES ARE FOR: Default Zid theme (regal-honey.com)
+        // =====================================================================
         var PHONE_SELECTORS = [
-            '#mobile',
-            'input[name="mobile"]',
-            'input[type="tel"]',
-            '.login_guest-container input[id*="mobile"]'
+            '#mobile',                                          // <- Zid default phone field ID
+            'input[name="mobile"]',                             // <- fallback: any input named "mobile"
+            'input[type="tel"]',                                // <- fallback: any input of type tel
+            '.login_guest-container input[id*="mobile"]'        // <- Zid default: phone inside guest login form container
         ].join(',');
 
         function sendContactUpdate(email, phone) {
@@ -333,14 +378,36 @@
     setInterval(checkForLogin, 3000);
     console.log(SCRIPT_NAMESPACE + ': Started polling for customer login state.');
 
-    // --- CHECKOUT CONTACT CAPTURE ---
-    // Detect checkout pages and start monitoring email/phone fields
-    // Zid guest checkout is at /auth/login?redirect_to=/checkout/...
+    // =====================================================================
+    // *** STORE-SPECIFIC: CHECKOUT PAGE URL PATTERNS ***
+    //
+    // HOW TO FIND THE CORRECT URL PATTERNS FOR A NEW STORE:
+    //   1. Go to the store as a guest user
+    //   2. Add a product to cart and proceed to checkout
+    //   3. Look at the URL in the browser address bar at EACH step:
+    //      - The cart page URL (e.g. /cart, /basket, /shopping-cart)
+    //      - The checkout page URL (e.g. /checkout, /checkout/shipping)
+    //      - The guest login page URL (e.g. /auth/login?redirect_to=/checkout)
+    //      - The payment page URL (e.g. /payment, /checkout/payment)
+    //   4. Update the path.includes('...') checks below to match those URLs
+    //
+    // WHAT TO CHANGE: Edit the strings inside path.includes('...') below.
+    //   Each line checks if the current page URL contains that keyword.
+    //   Add new lines with || path.includes('your-keyword') for extra pages.
+    //   Remove lines that don't apply to this store.
+    //
+    // EXAMPLE: If the store uses /basket for cart and /order/review for checkout:
+    //   Change to: path.includes('basket') || path.includes('order/review')
+    //
+    // CURRENT VALUES ARE FOR: Default Zid theme (regal-honey.com)
+    // =====================================================================
     function isCheckoutPage() {
         var path = window.location.pathname.toLowerCase();
         var search = window.location.search.toLowerCase();
-        var result = path.includes('checkout') || path.includes('payment') || path.includes('/cart')
-            || (path.includes('/auth/login') && search.includes('checkout'));
+        var result = path.includes('checkout')                                  // <- checkout page URL contains "checkout"
+            || path.includes('payment')                                         // <- payment page URL contains "payment"
+            || path.includes('/cart')                                            // <- cart page URL contains "/cart"
+            || (path.includes('/auth/login') && search.includes('checkout'));    // <- Zid guest login redirecting to checkout
         console.log(SCRIPT_NAMESPACE + ': [DEBUG] isCheckoutPage? path=' + path + ' search=' + search + ' → ' + result);
         return result;
     }
