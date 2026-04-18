@@ -14,6 +14,7 @@ export interface StoredConvertBucketingEntry {
 // Represents the client-side context (visitor data, experiment buckets) stored persistently.
 export interface StoredBucketingInfo {
   convertVisitorId: string; // This will be the document ID in Firestore
+  storeId?: string | null; // Zid store ID for multi-tenant isolation
   zidCustomerId?: string | null; // Optional Zid customer ID, stored for lookup
   ipAddress?: string | null; // Added for heuristic matching
   convertBucketing: StoredConvertBucketingEntry[]; // Array of experiments and variations with numeric IDs
@@ -25,6 +26,37 @@ export interface StoredBucketingInfo {
   guestPhone?: string | null; // Guest customer phone, for checkout-based attribution
   consumed?: boolean; // Whether this context has been used for a conversion
   consumedAt?: admin.firestore.FieldValue | admin.firestore.Timestamp | number;
+}
+
+// Store configuration for multi-tenant support
+export interface StoreConfig {
+  storeId: string;
+  storeName: string;
+  storeDomain: string;
+  // Convert.com credentials
+  convertAccountId: string;
+  convertProjectId: string;
+  convertApiKeySecret: string;
+  convertGoalIdForPurchase: number;
+  // Webhook security
+  zidWebhookSecretToken: string;
+  // Frontend checkout config
+  checkoutConfig: {
+    emailSelectors: string[];
+    phoneSelectors: string[];
+    checkoutUrlKeywords: string[];
+    guestLoginPattern?: { path: string; search: string; };
+  };
+  active: boolean;
+  createdAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
+  updatedAt?: admin.firestore.FieldValue | admin.firestore.Timestamp;
+}
+
+// Credentials passed to Convert API service methods
+export interface ConvertCredentials {
+  accountId: string;
+  projectId: string;
+  apiKeySecret: string;
 }
 
 // NEW: A normalized interface for bucketing information after retrieval,

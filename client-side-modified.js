@@ -1,20 +1,97 @@
-// == Zid-Convert Integration Script v65.0 - Email/Phone Guest Attribution ==
-// Guest users are tracked by capturing email/phone at checkout
-// Logged-in users are tracked via zidCustomerId
+// == Zid-Convert Integration Script v66.0 - Multi-Tenant ==
+// Supports multiple Zid stores. Each store sets STORE_ID below.
+// Checkout selectors are fetched from the backend per store.
+// Guest users are tracked by capturing email/phone at checkout.
+// Logged-in users are tracked via zidCustomerId.
 (function (window, document) {
     'use strict';
 
-    var SCRIPT_NAMESPACE = 'ZidConvertTracker';
-    console.log(SCRIPT_NAMESPACE + ': Email/Phone Guest Attribution Script (v65.0) initialized.');
+    // =====================================================================
+    // *** STORE-SPECIFIC CONFIGURATION ***
+    //
+    // HOW TO SET UP FOR A NEW STORE:
+    //   1. Set STORE_ID to the Zid store ID (found in Zid dashboard or webhook payloads)
+    //   2. That's it! The script fetches checkout selectors from the backend.
+    //      If the backend is unreachable, it falls back to DEFAULT selectors below.
+    //
+    // HOW TO FIND THE STORE ID:
+    //   - In Zid merchant dashboard: look for your store ID in settings
+    //   - In a webhook payload: the "store_id" field
+    //   - Ask the store owner for their Zid store ID
+    // =====================================================================
+    var STORE_ID = '210142';
 
-    // --- Configuration ---
+    var SCRIPT_NAMESPACE = 'ZidConvertTracker';
     var API_ENDPOINT = 'https://zid-convert-integration.onrender.com/api/capture-convert-context';
+    var CONFIG_ENDPOINT = 'https://zid-convert-integration.onrender.com/api/store-config/' + STORE_ID;
     var CONVERT_COOKIE_NAME = '_conv_v';
     var SESSION_STORAGE_KEY = SCRIPT_NAMESPACE + '_generated_visitor_id';
     var hasBeenCalled = false;
     var lastKnownZidCustomerId = null;
     var lastSentEmail = null;
     var lastSentPhone = null;
+
+    // Default checkout selectors (used if backend config fetch fails)
+    var DEFAULT_EMAIL_SELECTORS = ['#inputEmail', 'input[name="email"]', 'input[type="email"]'];
+    var DEFAULT_PHONE_SELECTORS = ['#mobile', 'input[name="mobile"]', 'input[type="tel"]'];
+    var DEFAULT_CHECKOUT_KEYWORDS = ['checkout', 'payment', '/cart'];
+    var DEFAULT_GUEST_LOGIN_PATTERN = { path: '/auth/login', search: 'checkout' };
+
+    // Store config loaded from backend (populated by fetchStoreConfig)
+    var storeCheckoutConfig = null;
+
+    console.log(SCRIPT_NAMESPACE + ': Multi-Tenant Script (v66.0) initialized. Store ID:', STORE_ID);
+
+    // --- FETCH STORE CONFIG FROM BACKEND ---
+    function fetchStoreConfig(callback) {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', CONFIG_ENDPOINT, true);
+            xhr.timeout = 5000;
+            xhr.onload = function () {
+                if (xhr.status === 200) {
+                    try {
+                        var data = JSON.parse(xhr.responseText);
+                        storeCheckoutConfig = data.checkoutConfig || null;
+                        console.log(SCRIPT_NAMESPACE + ': [CONFIG] Store config loaded from backend:', JSON.stringify(storeCheckoutConfig));
+                    } catch (e) {
+                        console.warn(SCRIPT_NAMESPACE + ': [CONFIG] Failed to parse store config response. Using defaults.');
+                    }
+                } else {
+                    console.warn(SCRIPT_NAMESPACE + ': [CONFIG] Backend returned status', xhr.status, '. Using defaults.');
+                }
+                if (callback) callback();
+            };
+            xhr.onerror = function () {
+                console.warn(SCRIPT_NAMESPACE + ': [CONFIG] Failed to fetch store config. Using defaults.');
+                if (callback) callback();
+            };
+            xhr.ontimeout = function () {
+                console.warn(SCRIPT_NAMESPACE + ': [CONFIG] Store config fetch timed out. Using defaults.');
+                if (callback) callback();
+            };
+            xhr.send();
+        } catch (e) {
+            console.warn(SCRIPT_NAMESPACE + ': [CONFIG] Error fetching store config:', e);
+            if (callback) callback();
+        }
+    }
+
+    // --- Helper: get selectors from config or defaults ---
+    function getEmailSelectors() {
+        var selectors = (storeCheckoutConfig && storeCheckoutConfig.emailSelectors) || DEFAULT_EMAIL_SELECTORS;
+        return selectors.join(',');
+    }
+    function getPhoneSelectors() {
+        var selectors = (storeCheckoutConfig && storeCheckoutConfig.phoneSelectors) || DEFAULT_PHONE_SELECTORS;
+        return selectors.join(',');
+    }
+    function getCheckoutKeywords() {
+        return (storeCheckoutConfig && storeCheckoutConfig.checkoutUrlKeywords) || DEFAULT_CHECKOUT_KEYWORDS;
+    }
+    function getGuestLoginPattern() {
+        return (storeCheckoutConfig && storeCheckoutConfig.guestLoginPattern) || DEFAULT_GUEST_LOGIN_PATTERN;
+    }
 
     // --- UTILITY FUNCTIONS ---
     function generateUUID() {
@@ -33,13 +110,9 @@
                 console.log(SCRIPT_NAMESPACE + ': [DEBUG] No Convert cookie found.');
             } else {
                 var decodedCookieValue = decodeURIComponent(rawCookieValue);
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Convert cookie raw value:', decodedCookieValue);
                 var match = decodedCookieValue.match(/^vi:([^~*]+)/) || decodedCookieValue.match(/~v:([^~]+)/);
                 if (match && match[1]) {
                     convertVisitorId = match[1];
-                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Extracted visitor ID from cookie:', convertVisitorId);
-                } else {
-                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Cookie found but no visitor ID pattern matched.');
                 }
             }
         } catch (e) { console.error(SCRIPT_NAMESPACE + ': Error reading Convert cookie.', e); }
@@ -50,8 +123,6 @@
                 generatedId = generateUUID();
                 sessionStorage.setItem(SESSION_STORAGE_KEY, generatedId);
                 console.log(SCRIPT_NAMESPACE + ': [DEBUG] Generated NEW visitor ID:', generatedId);
-            } else {
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Reusing visitor ID from sessionStorage:', generatedId);
             }
             return generatedId;
         }
@@ -62,7 +133,6 @@
         var id = null;
         if (window.customer && window.customer.id) { id = window.customer.id.toString(); }
         else if (window.customerHashed && window.customerHashed.external_id) { id = window.customerHashed.external_id.toString(); }
-        console.log(SCRIPT_NAMESPACE + ': [DEBUG] getZidCustomerId =', id || 'null (guest user)');
         return id;
     }
 
@@ -81,9 +151,7 @@
                         });
                     }
                 }
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Found', experiments.length, 'active experiment(s) via Convert API');
-            } else {
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] window.convert.currentData.experiences is empty');
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Found', experiments.length, 'active experiment(s)');
             }
         } catch (e) {
             console.error(SCRIPT_NAMESPACE + ': Error reading experiments:', e);
@@ -92,14 +160,10 @@
     }
 
     // --- CHECKOUT EMAIL/PHONE CAPTURE ---
-    // Monitors checkout form fields to capture guest contact info.
-    // This links the frontend convertVisitorId to the guest's email/phone,
-    // which also appears in the Zid webhook payload for matching.
     function captureCheckoutContact() {
         var convertVisitorId = getOrCreateConvertVisitorId();
         var zidCustomerId = getZidCustomerId();
 
-        // Skip for logged-in users — they are tracked by zidCustomerId
         if (zidCustomerId) {
             console.log(SCRIPT_NAMESPACE + ': Logged-in user on checkout, skipping contact capture.');
             return;
@@ -107,75 +171,17 @@
 
         console.log(SCRIPT_NAMESPACE + ': Guest user on checkout page. Monitoring for email/phone fields.');
 
-        // =====================================================================
-        // *** STORE-SPECIFIC: EMAIL FIELD CSS SELECTORS ***
-        //
-        // HOW TO FIND THE CORRECT SELECTORS FOR A NEW STORE:
-        //   1. Go to the store's checkout page as a guest user
-        //   2. Right-click on the EMAIL input field and click "Inspect"
-        //   3. In DevTools, look at the <input> element's attributes:
-        //      - If it has id="someId"        -> use '#someId'
-        //      - If it has name="someName"    -> use 'input[name="someName"]'
-        //      - If it has class="someClass"  -> use '.someClass'
-        //      - If it is inside a container  -> use '.containerClass input[type="email"]'
-        //   4. Replace the selectors below with the ones matching this store
-        //
-        // WHAT TO CHANGE: Replace the strings inside the array [ ] below.
-        //   Each string is a CSS selector that targets the email input field.
-        //   You can have multiple selectors as fallbacks (separated by commas).
-        //   The script tries ALL selectors and uses whichever matches first.
-        //
-        // EXAMPLE: If the store's email field is <input id="guest_email" name="user_email">
-        //   Change the array to: ['#guest_email', 'input[name="user_email"]']
-        //
-        // CURRENT VALUES ARE FOR: Default Zid theme (regal-honey.com)
-        // =====================================================================
-        var EMAIL_SELECTORS = [
-            '#inputEmail',                                      // <- Zid default email field ID
-            'input[name="email"]',                              // <- fallback: any input named "email"
-            'input[type="email"]',                              // <- fallback: any input of type email
-            '.login_guest-container input[id*="email"]'         // <- Zid default: email inside guest login form container
-        ].join(',');
-
-        // =====================================================================
-        // *** STORE-SPECIFIC: PHONE FIELD CSS SELECTORS ***
-        //
-        // HOW TO FIND THE CORRECT SELECTORS FOR A NEW STORE:
-        //   1. Go to the store's checkout page as a guest user
-        //   2. Right-click on the PHONE/MOBILE input field and click "Inspect"
-        //   3. In DevTools, look at the <input> element's attributes:
-        //      - If it has id="someId"        -> use '#someId'
-        //      - If it has name="someName"    -> use 'input[name="someName"]'
-        //      - If it has class="someClass"  -> use '.someClass'
-        //      - If it is inside a container  -> use '.containerClass input[type="tel"]'
-        //   4. Replace the selectors below with the ones matching this store
-        //
-        // WHAT TO CHANGE: Replace the strings inside the array [ ] below.
-        //   Each string is a CSS selector that targets the phone input field.
-        //   You can have multiple selectors as fallbacks (separated by commas).
-        //   The script tries ALL selectors and uses whichever matches first.
-        //
-        // EXAMPLE: If the store's phone field is <input id="phone_number" name="tel">
-        //   Change the array to: ['#phone_number', 'input[name="tel"]']
-        //
-        // CURRENT VALUES ARE FOR: Default Zid theme (regal-honey.com)
-        // =====================================================================
-        var PHONE_SELECTORS = [
-            '#mobile',                                          // <- Zid default phone field ID
-            'input[name="mobile"]',                             // <- fallback: any input named "mobile"
-            'input[type="tel"]',                                // <- fallback: any input of type tel
-            '.login_guest-container input[id*="mobile"]'        // <- Zid default: phone inside guest login form container
-        ].join(',');
+        var EMAIL_SELECTORS = getEmailSelectors();
+        var PHONE_SELECTORS = getPhoneSelectors();
 
         function sendContactUpdate(email, phone) {
-            // Only send if we have new data
             if ((!email || email === lastSentEmail) && (!phone || phone === lastSentPhone)) {
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Contact unchanged, skipping send. Email:', email, 'Phone:', phone);
                 return;
             }
 
             var payload = {
                 convertVisitorId: convertVisitorId,
+                storeId: STORE_ID,
                 zidCustomerId: null,
                 zidPagePath: document.location.pathname + document.location.search
             };
@@ -189,72 +195,51 @@
                 lastSentPhone = phone;
             }
 
-            console.log('%c' + SCRIPT_NAMESPACE + ': [SENDING GUEST CONTACT] ✓', 'color: green; font-weight: bold;');
-            console.log(SCRIPT_NAMESPACE + ':   → convertVisitorId:', convertVisitorId);
-            console.log(SCRIPT_NAMESPACE + ':   → guestEmail:', payload.guestEmail || '(not updated)');
-            console.log(SCRIPT_NAMESPACE + ':   → guestPhone:', payload.guestPhone || '(not updated)');
-            console.log(SCRIPT_NAMESPACE + ':   → endpoint:', API_ENDPOINT);
-            console.log(SCRIPT_NAMESPACE + ':   → full payload:', JSON.stringify(payload));
+            console.log('%c' + SCRIPT_NAMESPACE + ': [SENDING GUEST CONTACT]', 'color: green; font-weight: bold;');
+            console.log(SCRIPT_NAMESPACE + ':   -> storeId:', STORE_ID);
+            console.log(SCRIPT_NAMESPACE + ':   -> convertVisitorId:', convertVisitorId);
+            console.log(SCRIPT_NAMESPACE + ':   -> guestEmail:', payload.guestEmail || '(not updated)');
+            console.log(SCRIPT_NAMESPACE + ':   -> guestPhone:', payload.guestPhone || '(not updated)');
             var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-            var sent = navigator.sendBeacon(API_ENDPOINT, blob);
-            console.log(SCRIPT_NAMESPACE + ':   → sendBeacon result:', sent ? 'QUEUED OK' : 'FAILED TO QUEUE');
+            navigator.sendBeacon(API_ENDPOINT, blob);
         }
 
         function attachListeners() {
             var emailFields = document.querySelectorAll(EMAIL_SELECTORS);
             var phoneFields = document.querySelectorAll(PHONE_SELECTORS);
 
-            console.log(SCRIPT_NAMESPACE + ': [DEBUG] Scanning for email fields with selectors:', EMAIL_SELECTORS);
-            console.log(SCRIPT_NAMESPACE + ': [DEBUG] Scanning for phone fields with selectors:', PHONE_SELECTORS);
             console.log(SCRIPT_NAMESPACE + ': [DEBUG] Found', emailFields.length, 'email field(s) and', phoneFields.length, 'phone field(s)');
 
             emailFields.forEach(function (field) {
                 if (field.dataset.zidConvertBound) return;
                 field.dataset.zidConvertBound = 'true';
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Binding email field → id:', field.id, '| name:', field.name, '| type:', field.type, '| current value:', field.value ? '(has value)' : '(empty)');
                 field.addEventListener('blur', function () {
                     var val = field.value.trim();
-                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Email field blur event → value:', val || '(empty)');
-                    if (val && val.includes('@')) {
-                        sendContactUpdate(val, null);
-                    }
+                    if (val && val.includes('@')) { sendContactUpdate(val, null); }
                 });
                 field.addEventListener('change', function () {
                     var val = field.value.trim();
-                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Email field change event → value:', val || '(empty)');
-                    if (val && val.includes('@')) {
-                        sendContactUpdate(val, null);
-                    }
+                    if (val && val.includes('@')) { sendContactUpdate(val, null); }
                 });
             });
 
             phoneFields.forEach(function (field) {
                 if (field.dataset.zidConvertBound) return;
                 field.dataset.zidConvertBound = 'true';
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Binding phone field → id:', field.id, '| name:', field.name, '| type:', field.type, '| current value:', field.value ? '(has value)' : '(empty)');
                 field.addEventListener('blur', function () {
                     var val = field.value.trim();
-                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Phone field blur event → value:', val || '(empty)');
-                    if (val && val.length >= 7) {
-                        sendContactUpdate(null, val);
-                    }
+                    if (val && val.length >= 7) { sendContactUpdate(null, val); }
                 });
                 field.addEventListener('change', function () {
                     var val = field.value.trim();
-                    console.log(SCRIPT_NAMESPACE + ': [DEBUG] Phone field change event → value:', val || '(empty)');
-                    if (val && val.length >= 7) {
-                        sendContactUpdate(null, val);
-                    }
+                    if (val && val.length >= 7) { sendContactUpdate(null, val); }
                 });
             });
 
             return emailFields.length + phoneFields.length;
         }
 
-        // Try attaching immediately
         var found = attachListeners();
-
-        // Use MutationObserver to catch dynamically-rendered checkout forms
         if (found === 0) {
             console.log(SCRIPT_NAMESPACE + ': No checkout fields found yet. Watching for dynamic form rendering.');
             var observer = new MutationObserver(function () {
@@ -265,8 +250,6 @@
                 }
             });
             observer.observe(document.body, { childList: true, subtree: true });
-
-            // Stop watching after 30 seconds to avoid performance impact
             setTimeout(function () { observer.disconnect(); }, 30000);
         }
     }
@@ -287,18 +270,17 @@
             zidPagePath: document.location.pathname + document.location.search,
             convertVisitorId: convertVisitorId,
             convertBucketing: experimentsToSend,
-            zidCustomerId: zidCustomerId
+            zidCustomerId: zidCustomerId,
+            storeId: STORE_ID
         };
 
-        console.log('%c' + SCRIPT_NAMESPACE + ': [SENDING CONTEXT] ✓', 'color: blue; font-weight: bold;');
-        console.log(SCRIPT_NAMESPACE + ':   → convertVisitorId:', convertVisitorId);
-        console.log(SCRIPT_NAMESPACE + ':   → zidCustomerId:', zidCustomerId || 'null (guest)');
-        console.log(SCRIPT_NAMESPACE + ':   → experiments:', JSON.stringify(experimentsToSend));
-        console.log(SCRIPT_NAMESPACE + ':   → page:', payload.zidPagePath);
-        console.log(SCRIPT_NAMESPACE + ':   → full payload:', JSON.stringify(payload));
+        console.log('%c' + SCRIPT_NAMESPACE + ': [SENDING CONTEXT]', 'color: blue; font-weight: bold;');
+        console.log(SCRIPT_NAMESPACE + ':   -> storeId:', STORE_ID);
+        console.log(SCRIPT_NAMESPACE + ':   -> convertVisitorId:', convertVisitorId);
+        console.log(SCRIPT_NAMESPACE + ':   -> zidCustomerId:', zidCustomerId || 'null (guest)');
+        console.log(SCRIPT_NAMESPACE + ':   -> experiments:', JSON.stringify(experimentsToSend));
         var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-        var sent = navigator.sendBeacon(API_ENDPOINT, blob);
-        console.log(SCRIPT_NAMESPACE + ':   → sendBeacon result:', sent ? 'QUEUED OK' : 'FAILED TO QUEUE');
+        navigator.sendBeacon(API_ENDPOINT, blob);
         return true;
     }
 
@@ -321,22 +303,17 @@
             console.error(SCRIPT_NAMESPACE + ': Error calling Convert.identify:', e);
         }
 
-        // Try to send immediately
         if (sendContext()) {
             contextSent = true;
             return;
         }
 
-        // Experiments may not be populated yet — poll every 500ms for up to 10 seconds
         console.log(SCRIPT_NAMESPACE + ': [DEBUG] No experiments yet. Polling for Convert data...');
         var attempts = 0;
         var maxAttempts = 20;
         var pollInterval = setInterval(function () {
             attempts++;
-            if (contextSent) {
-                clearInterval(pollInterval);
-                return;
-            }
+            if (contextSent) { clearInterval(pollInterval); return; }
             if (sendContext()) {
                 contextSent = true;
                 clearInterval(pollInterval);
@@ -345,7 +322,7 @@
             }
             if (attempts >= maxAttempts) {
                 clearInterval(pollInterval);
-                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Gave up polling after', maxAttempts, 'attempts. No experiments found on this page.');
+                console.log(SCRIPT_NAMESPACE + ': [DEBUG] Gave up polling after', maxAttempts, 'attempts.');
             }
         }, 500);
     }
@@ -362,72 +339,60 @@
         }
     }
 
-    // --- SCRIPT EXECUTION ---
-    lastKnownZidCustomerId = getZidCustomerId();
-
-    window._conv_q = window._conv_q || [];
-    window._conv_q.push({
-        what: 'addListener',
-        params: {
-            event: 'snippet.experiences_evaluated',
-            handler: handleExperiencesEvaluated
-        }
-    });
-    console.log(SCRIPT_NAMESPACE + ': Event listener for Convert registered.');
-
-    setInterval(checkForLogin, 3000);
-    console.log(SCRIPT_NAMESPACE + ': Started polling for customer login state.');
-
-    // =====================================================================
-    // *** STORE-SPECIFIC: CHECKOUT PAGE URL PATTERNS ***
-    //
-    // HOW TO FIND THE CORRECT URL PATTERNS FOR A NEW STORE:
-    //   1. Go to the store as a guest user
-    //   2. Add a product to cart and proceed to checkout
-    //   3. Look at the URL in the browser address bar at EACH step:
-    //      - The cart page URL (e.g. /cart, /basket, /shopping-cart)
-    //      - The checkout page URL (e.g. /checkout, /checkout/shipping)
-    //      - The guest login page URL (e.g. /auth/login?redirect_to=/checkout)
-    //      - The payment page URL (e.g. /payment, /checkout/payment)
-    //   4. Update the path.includes('...') checks below to match those URLs
-    //
-    // WHAT TO CHANGE: Edit the strings inside path.includes('...') below.
-    //   Each line checks if the current page URL contains that keyword.
-    //   Add new lines with || path.includes('your-keyword') for extra pages.
-    //   Remove lines that don't apply to this store.
-    //
-    // EXAMPLE: If the store uses /basket for cart and /order/review for checkout:
-    //   Change to: path.includes('basket') || path.includes('order/review')
-    //
-    // CURRENT VALUES ARE FOR: Default Zid theme (regal-honey.com)
-    // =====================================================================
+    // --- CHECKOUT PAGE DETECTION (uses config from backend) ---
     function isCheckoutPage() {
         var path = window.location.pathname.toLowerCase();
         var search = window.location.search.toLowerCase();
-        var result = path.includes('checkout')                                  // <- checkout page URL contains "checkout"
-            || path.includes('payment')                                         // <- payment page URL contains "payment"
-            || path.includes('/cart')                                            // <- cart page URL contains "/cart"
-            || (path.includes('/auth/login') && search.includes('checkout'));    // <- Zid guest login redirecting to checkout
-        console.log(SCRIPT_NAMESPACE + ': [DEBUG] isCheckoutPage? path=' + path + ' search=' + search + ' → ' + result);
+        var keywords = getCheckoutKeywords();
+        var loginPattern = getGuestLoginPattern();
+
+        var result = false;
+        for (var i = 0; i < keywords.length; i++) {
+            if (path.includes(keywords[i].toLowerCase())) {
+                result = true;
+                break;
+            }
+        }
+        if (!result && loginPattern && path.includes(loginPattern.path) && search.includes(loginPattern.search)) {
+            result = true;
+        }
+
+        console.log(SCRIPT_NAMESPACE + ': [DEBUG] isCheckoutPage? path=' + path + ' search=' + search + ' -> ' + result);
         return result;
     }
 
-    if (isCheckoutPage()) {
-        console.log('%c' + SCRIPT_NAMESPACE + ': [CHECKOUT PAGE DETECTED]', 'color: orange; font-weight: bold;');
-        captureCheckoutContact();
-    } else {
-        console.log(SCRIPT_NAMESPACE + ': [DEBUG] Not a checkout page. Contact capture will activate on navigation to checkout.');
-    }
-    // Also watch for SPA navigation to checkout
-    var lastPath = window.location.pathname.toLowerCase();
-    setInterval(function () {
-        var currentPath = window.location.pathname.toLowerCase();
-        if (currentPath !== lastPath) {
-            lastPath = currentPath;
-            if (isCheckoutPage()) {
-                captureCheckoutContact();
+    // --- SCRIPT EXECUTION ---
+    // Fetch store config first, then initialize everything
+    fetchStoreConfig(function () {
+        lastKnownZidCustomerId = getZidCustomerId();
+
+        window._conv_q = window._conv_q || [];
+        window._conv_q.push({
+            what: 'addListener',
+            params: {
+                event: 'snippet.experiences_evaluated',
+                handler: handleExperiencesEvaluated
             }
+        });
+        console.log(SCRIPT_NAMESPACE + ': Event listener for Convert registered.');
+
+        setInterval(checkForLogin, 3000);
+
+        if (isCheckoutPage()) {
+            console.log('%c' + SCRIPT_NAMESPACE + ': [CHECKOUT PAGE DETECTED]', 'color: orange; font-weight: bold;');
+            captureCheckoutContact();
         }
-    }, 2000);
+
+        var lastPath = window.location.pathname.toLowerCase();
+        setInterval(function () {
+            var currentPath = window.location.pathname.toLowerCase();
+            if (currentPath !== lastPath) {
+                lastPath = currentPath;
+                if (isCheckoutPage()) { captureCheckoutContact(); }
+            }
+        }, 2000);
+
+        console.log(SCRIPT_NAMESPACE + ': Script fully initialized for store', STORE_ID);
+    });
 
 })(window, document);

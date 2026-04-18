@@ -3,24 +3,11 @@ import { Request, Response } from 'express';
 import { ConvertApiService, Event, Visitor, Product as ConvertProductType } from '../../services/convert-service';
 import { CurrencyService } from '../../services/currency-service';
 import { getContextByZidCustomerId, getContextByGuestContact, getNewestGuestContext, markContextConsumed } from '../../services/firestore-service';
-import { StoredBucketingInfo as FirestoreStoredBucketingInfo, NormalizedBucketingInfo, ZidProduct } from '../../types/index';
+import { getStoreConfig } from '../../services/store-config-service';
+import { StoredBucketingInfo as FirestoreStoredBucketingInfo, NormalizedBucketingInfo, ZidProduct, ConvertCredentials } from '../../types/index';
 import * as admin from 'firebase-admin';
 
 const TARGET_REPORTING_CURRENCY = 'SAR';
-
-function getClientIpFromWebhook(req: Request): string | undefined {
-    const ipHeaders = ['x-forwarded-for', 'x-real-ip', 'true-client-ip', 'cf-connecting-ip', 'x-client-ip'];
-    for (const header of ipHeaders) {
-        const ip = req.headers[header];
-        if (typeof ip === 'string') {
-            const firstIp = ip.split(',')[0].trim();
-            if (firstIp && (firstIp.includes('.') || firstIp.includes(':'))) {
-                return firstIp;
-            }
-        }
-    }
-    return req.ip || req.socket.remoteAddress;
-}
 
 function normalizeContext(firestoreData: FirestoreStoredBucketingInfo): NormalizedBucketingInfo {
     return {
@@ -38,12 +25,30 @@ function normalizeContext(firestoreData: FirestoreStoredBucketingInfo): Normaliz
 }
 
 export const zidOrderEventsWebhookController = async (req: Request, res: Response) => {
-    const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
-    const providedToken = req.query.token;
+    // Parse body first so we can extract store_id for config lookup
+    let zidOrder: any;
+    try {
+        if (typeof req.body === 'string') {
+            zidOrder = JSON.parse(req.body);
+        } else {
+            zidOrder = req.body;
+        }
+    } catch (e) {
+        return res.status(400).send("Bad Request: Invalid JSON.");
+    }
 
-    if (!secretToken || providedToken !== secretToken) {
+    const storeId = zidOrder?.store_id?.toString() || null;
+    const providedToken = req.query.token as string;
+
+    // Look up store config — fall back to env vars if no store config found
+    const storeConfig = storeId ? await getStoreConfig(storeId) : null;
+
+    // Validate webhook token: per-store token from config, or fallback to env var
+    const expectedToken = storeConfig?.zidWebhookSecretToken || process.env.ZID_WEBHOOK_SECRET_TOKEN;
+    if (!expectedToken || providedToken !== expectedToken) {
         return res.status(403).send("Forbidden: Invalid token.");
     }
+
     res.status(200).json({ message: "Webhook received and validated. Processing in background." });
 
     try {
@@ -51,18 +56,12 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         console.log("=        ZID WEBHOOK RECEIVED - PROCESSING ORDER              =");
         console.log("================================================================");
         console.log(`Received at: ${new Date().toISOString()}`);
+        console.log(`Store ID: ${storeId || 'N/A'} | Config: ${storeConfig ? storeConfig.storeName : 'ENV FALLBACK'}`);
         console.log("--- HEADERS ---");
         console.log(JSON.stringify(req.headers, null, 2));
         console.log("--- PARSED BODY (as JSON) ---");
-        console.log(JSON.stringify(typeof req.body === 'string' ? JSON.parse(req.body) : req.body, null, 2));
+        console.log(JSON.stringify(zidOrder, null, 2));
         console.log("================================================================");
-
-        let zidOrder;
-        if (typeof req.body === 'string') {
-            zidOrder = JSON.parse(req.body);
-        } else {
-            zidOrder = req.body;
-        }
 
         if (!zidOrder || !zidOrder.id) {
             console.error("Webhook payload did not contain a valid order ID.");
@@ -71,14 +70,24 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
 
         const zidCustomerId = zidOrder.customer?.id?.toString() || null;
         const isGuestUser = zidOrder.is_guest_customer === 1;
-        const orderLogPrefix = `[ZidOrder ${zidOrder.id}, ${isGuestUser ? 'GUEST' : 'Cust ' + zidCustomerId}]`;
-        const convertGoalId = parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE!, 10);
+        const orderLogPrefix = `[ZidOrder ${zidOrder.id}, Store ${storeId || 'N/A'}, ${isGuestUser ? 'GUEST' : 'Cust ' + zidCustomerId}]`;
+
+        // Get Convert credentials from store config or env vars
+        const convertGoalId = storeConfig?.convertGoalIdForPurchase
+            || parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE || '0', 10);
+
+        const convertCredentials: ConvertCredentials | undefined = storeConfig ? {
+            accountId: storeConfig.convertAccountId,
+            projectId: storeConfig.convertProjectId,
+            apiKeySecret: storeConfig.convertApiKeySecret
+        } : undefined;
 
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
 
         // ========================================================================
         // CONTEXT LOOKUP: Two-path attribution
         // Use is_guest_customer flag (NOT customer.id presence — guests also have an ID)
+        // All lookups filter by storeId for multi-tenant isolation
         // ========================================================================
         let storedContext: NormalizedBucketingInfo | null = null;
         let visitorIdForConvert: string;
@@ -87,7 +96,7 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         if (!isGuestUser && zidCustomerId) {
             // === LOGGED-IN USER PATH ===
             console.log(`${orderLogPrefix} [WEBHOOK] Logged-in user detected. Looking up context by zidCustomerId.`);
-            const firestoreData = await getContextByZidCustomerId(zidCustomerId);
+            const firestoreData = await getContextByZidCustomerId(zidCustomerId, storeId || undefined);
 
             if (firestoreData) {
                 storedContext = normalizeContext(firestoreData);
@@ -103,7 +112,6 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             // === GUEST USER PATH ===
             console.log(`${orderLogPrefix} [WEBHOOK] Guest user detected. Attempting email/phone lookup.`);
 
-            // Primary: Match by guest email/phone from webhook
             const guestEmail = zidOrder.customer?.email || zidOrder.customer_email || null;
             const guestPhone = zidOrder.customer?.mobile || zidOrder.customer?.phone || zidOrder.customer_phone || null;
 
@@ -112,7 +120,7 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             let firestoreData: FirestoreStoredBucketingInfo | null = null;
 
             if (guestEmail || guestPhone) {
-                firestoreData = await getContextByGuestContact(guestEmail, guestPhone);
+                firestoreData = await getContextByGuestContact(guestEmail, guestPhone, storeId || undefined);
             }
 
             if (firestoreData) {
@@ -120,12 +128,10 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                 attributionSource = `Firestore (by guest ${guestEmail ? 'email' : 'phone'})`;
                 visitorIdForConvert = storedContext.convertVisitorId;
                 console.log(`${orderLogPrefix} [WEBHOOK] Context FOUND by guest contact. ConvertVisitorId: ${visitorIdForConvert}`);
-                // Mark consumed to prevent double-attribution
                 await markContextConsumed(storedContext.convertVisitorId);
             } else {
-                // Fallback: newest unconsumed guest context within 30 minutes
                 console.log(`${orderLogPrefix} [WEBHOOK] No context found by email/phone. Trying newest guest context fallback.`);
-                firestoreData = await getNewestGuestContext(30);
+                firestoreData = await getNewestGuestContext(30, storeId || undefined);
 
                 if (firestoreData) {
                     storedContext = normalizeContext(firestoreData);
@@ -134,7 +140,6 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
                     console.log(`${orderLogPrefix} [WEBHOOK] Fallback context FOUND. ConvertVisitorId: ${visitorIdForConvert}`);
                     await markContextConsumed(storedContext.convertVisitorId);
                 } else {
-                    // No context found at all — send unattributed conversion
                     attributionSource = 'Fallback (no guest context found)';
                     visitorIdForConvert = `zid-guest-${zidOrder.id}`;
                     console.log(`${orderLogPrefix} [WEBHOOK] No guest context found at all. Using fallback ID: ${visitorIdForConvert}`);
@@ -149,7 +154,6 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         // ========================================================================
         const eventsForConvert: Event[] = [];
 
-        // Bucketing events (from stored context)
         if (storedContext?.convertBucketing?.length) {
             console.log(`${orderLogPrefix} Context found (${attributionSource}). Adding ${storedContext.convertBucketing.length} bucketing event(s).`);
             storedContext.convertBucketing.forEach(bucket => {
@@ -165,7 +169,6 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             console.log(`${orderLogPrefix} No bucketing data. Conversion will be unattributed to A/B test.`);
         }
 
-        // Conversion event
         const finalOrderTotal = parseFloat(zidOrder.order_total || "0");
         const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY;
         const revenueForConvertAPI = await CurrencyService.convertToSAR(finalOrderTotal, originalCurrencyCode);
@@ -197,20 +200,16 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         });
 
         // ========================================================================
-        // SEND TO CONVERT — two calls:
-        // 1. v1/track for bucketing + goal hit
-        // 2. REST POST tracking for revenue + product count (tr event)
+        // SEND TO CONVERT — two calls, using per-store credentials
         // ========================================================================
         const visitorPayload: Visitor = {
             visitorId: visitorIdForConvert,
             events: eventsForConvert
         };
 
-        // Collect experience/variation IDs for the transaction call
         const experienceIds = storedContext?.convertBucketing?.map(b => b.experimentId) || [];
         const variationIds = storedContext?.convertBucketing?.map(b => b.variationId) || [];
 
-        // Calculate total product count
         let totalProductsCount = 0;
         if (zidOrder.products && Array.isArray(zidOrder.products)) {
             totalProductsCount = zidOrder.products.reduce((sum: number, p: ZidProduct) => {
@@ -219,10 +218,9 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         }
 
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending to Convert v1/track API ---`);
-        await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
+        await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload, convertCredentials);
         console.log(`--- ${orderLogPrefix} [WEBHOOK] v1/track API call complete ---`);
 
-        // Send transaction data via REST POST tracking endpoint
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Sending transaction data via REST POST tracking ---`);
         console.log(`${orderLogPrefix} Revenue: ${revenueForConvertAPI} SAR, Products count: ${totalProductsCount}`);
         await ConvertApiService.sendTrackingWithTransaction({
@@ -232,7 +230,7 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             goalId: convertGoalId,
             revenue: revenueForConvertAPI,
             productsCount: totalProductsCount
-        });
+        }, convertCredentials);
         console.log(`--- ${orderLogPrefix} [WEBHOOK] REST POST tracking call complete ---`);
         console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing complete ---`);
 

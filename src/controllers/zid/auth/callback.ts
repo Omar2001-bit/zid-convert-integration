@@ -6,7 +6,8 @@ import { ConvertApiService, Visitor, Event, BucketingEventData, ConversionEventD
 // Original import for in-memory store fallback
 import { getStoredClientContext, StoredBucketingInfo as InMemoryStoredBucketingInfo } from '../../api/convertContextController';
 // CORRECTED IMPORT: StoredBucketingInfo, StoredConvertBucketingEntry, ZidProduct, AND NormalizedBucketingInfo from types/index
-import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry, ZidProduct, NormalizedBucketingInfo } from '../../../types/index';
+import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry, ZidProduct, NormalizedBucketingInfo, ConvertCredentials } from '../../../types/index';
+import { getStoreConfig, saveStoreConfig } from '../../../services/store-config-service';
 // Added: Import Firestore service functions (these are still needed directly here as they perform the actual DB calls)
 import { getContextByConvertVisitorId, getContextByZidCustomerId } from '../../../services/firestore-service';
 import { CurrencyService } from '../../../services/currency-service';
@@ -37,17 +38,63 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
         const authorizationJwt = tokens.authorization;
         console.log("ZidAuthCallback: Tokens obtained successfully.");
 
+        // --- Store-aware webhook registration ---
+        let detectedStoreId: string | null = null;
         try {
             if (!process.env.MY_BACKEND_URL) {
                 console.error("ZidAuthCallback: MY_BACKEND_URL not set in .env. Cannot create Zid webhook.");
             } else {
-                const secretToken = process.env.ZID_WEBHOOK_SECRET_TOKEN;
-                
-                if (!secretToken) {
-                    console.error("ZidAuthCallback: ZID_WEBHOOK_SECRET_TOKEN is not set in .env. Cannot create secure webhook. Please configure it.");
+                // Try to get merchant profile to detect store_id
+                try {
+                    const profile = await ZidApiService.getMerchantProfile(xManagerToken, authorizationJwt);
+                    if (profile?.store?.id) {
+                        detectedStoreId = profile.store.id.toString();
+                        console.log(`ZidAuthCallback: Detected store ID from profile: ${detectedStoreId}`);
+                    }
+                } catch (profileErr) {
+                    console.warn("ZidAuthCallback: Could not fetch merchant profile for store detection:", (profileErr as Error).message);
+                }
+
+                // Look up or create store config for webhook token
+                let webhookToken: string;
+                if (detectedStoreId) {
+                    const existingConfig = await getStoreConfig(detectedStoreId);
+                    if (existingConfig) {
+                        webhookToken = existingConfig.zidWebhookSecretToken;
+                        console.log(`ZidAuthCallback: Using existing webhook token for store ${detectedStoreId}`);
+                    } else {
+                        // Create skeleton store config — Convert credentials must be added later via admin endpoint
+                        webhookToken = `token_${Math.random().toString(36).substring(2, 15)}`;
+                        await saveStoreConfig({
+                            storeId: detectedStoreId,
+                            storeName: 'Pending Setup',
+                            storeDomain: '',
+                            convertAccountId: '',
+                            convertProjectId: '',
+                            convertApiKeySecret: '',
+                            convertGoalIdForPurchase: 0,
+                            zidWebhookSecretToken: webhookToken,
+                            checkoutConfig: {
+                                emailSelectors: ['#inputEmail', 'input[name="email"]', 'input[type="email"]'],
+                                phoneSelectors: ['#mobile', 'input[name="mobile"]', 'input[type="tel"]'],
+                                checkoutUrlKeywords: ['checkout', 'payment', '/cart'],
+                                guestLoginPattern: { path: '/auth/login', search: 'checkout' }
+                            },
+                            active: false // Inactive until Convert credentials are added
+                        });
+                        console.log(`ZidAuthCallback: Created SKELETON store config for store ${detectedStoreId}. Convert credentials must be added via admin endpoint.`);
+                    }
                 } else {
-                    const webhookTargetUrl = `${process.env.MY_BACKEND_URL}/webhooks/zid/order-events?token=${secretToken}`;
-                    
+                    // Fallback to env var if store ID couldn't be detected
+                    webhookToken = process.env.ZID_WEBHOOK_SECRET_TOKEN || '';
+                    if (!webhookToken) {
+                        console.error("ZidAuthCallback: No webhook token available. Cannot create secure webhook.");
+                    }
+                }
+
+                if (webhookToken) {
+                    const webhookTargetUrl = `${process.env.MY_BACKEND_URL}/webhooks/zid/order-events?token=${webhookToken}`;
+
                     const webhookPayload = {
                         event: "order.create",
                         target_url: webhookTargetUrl,
@@ -55,7 +102,7 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                         subscriber: "Zid-Convert Integration App"
                     };
 
-                    console.log(`ZidAuthCallback: Preparing to create/update SECURE Zid webhook for order.create to target: ${webhookTargetUrl}`);
+                    console.log(`ZidAuthCallback: Creating webhook for store ${detectedStoreId || 'unknown'} to target: ${webhookTargetUrl}`);
                     await ZidApiService.createWebhookSubscription(xManagerToken, authorizationJwt, webhookPayload);
                 }
             }
@@ -72,15 +119,19 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                 const fetchedZidOrders = ordersResponse.orders;
                 console.log(`ZidAuthCallback: Fetched ${fetchedZidOrders.length} Zid Orders. Processing for Convert...`);
 
-                const convertGoalIdString = process.env.CONVERT_GOAL_ID_FOR_PURCHASE;
+                // Look up store config for Convert credentials
+                const storeConfigForOrders = detectedStoreId ? await getStoreConfig(detectedStoreId) : null;
+                const convertGoalId = storeConfigForOrders?.convertGoalIdForPurchase
+                    || parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE || '0', 10);
+                const convertCreds: ConvertCredentials | undefined = storeConfigForOrders ? {
+                    accountId: storeConfigForOrders.convertAccountId,
+                    projectId: storeConfigForOrders.convertProjectId,
+                    apiKeySecret: storeConfigForOrders.convertApiKeySecret
+                } : undefined;
 
-                if (!convertGoalIdString) {
-                    console.error("ZidAuthCallback: Essential Convert configuration missing from .env.");
+                if (!convertGoalId) {
+                    console.error("ZidAuthCallback: Convert Goal ID not configured (neither in store config nor .env).");
                 } else {
-                    const convertGoalId = parseInt(convertGoalIdString, 10);
-                    if (isNaN(convertGoalId)) {
-                        console.error(`ZidAuthCallback: CONVERT_GOAL_ID_FOR_PURCHASE (${convertGoalIdString}) is not valid.`);
-                    } else {
                         for (const zidOrder of fetchedZidOrders) {
                             const orderLogPrefix = `[ZidOrder ${zidOrder.id}, Cust ${zidOrder.customer?.id || 'N/A'}]`;
                             console.log(`--- ${orderLogPrefix} Processing for Convert (Goal ID: ${convertGoalId}) ---`);
@@ -267,7 +318,7 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                 };
 
                                 console.log(`${orderLogPrefix} Preparing NEW v1/track METRICS API payload (Conversion):`, JSON.stringify(newModernVisitorPayload, null, 2));
-                                await ConvertApiService.sendMetricsV1ApiEvents(newModernVisitorPayload);
+                                await ConvertApiService.sendMetricsV1ApiEvents(newModernVisitorPayload, convertCreds);
                                 // --- END NEW MODERN METRICS V1 API CALL (conversion event) ---
 
                             } else {
@@ -275,7 +326,6 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                             }
                             console.log(`--- ${orderLogPrefix} Finished Convert API calls for this order ---`); // Simplified log
                         }
-                    }
                 }
             }
         } catch (apiError) {

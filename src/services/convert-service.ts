@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { ConvertCredentials } from '../types/index';
 
 // Your modern interfaces are correct and preserved
 export interface Visitor {
@@ -61,18 +62,18 @@ export class ConvertApiService {
     // ==========================================================================================
     // === This is the ONLY active function, implementing the confirmed Metrics Tracking API (v1/track) ==
     // ==========================================================================================
-    public static async sendMetricsV1ApiEvents(visitor: Visitor): Promise<any | null> {
-        const accountId = process.env.CONVERT_ACCOUNT_ID;
-        const projectId = process.env.CONVERT_PROJECT_ID;
-        const apiSecret = process.env.CONVERT_API_KEY_SECRET;
+    public static async sendMetricsV1ApiEvents(visitor: Visitor, credentials?: ConvertCredentials): Promise<any | null> {
+        const accountId = credentials?.accountId || process.env.CONVERT_ACCOUNT_ID;
+        const projectId = credentials?.projectId || process.env.CONVERT_PROJECT_ID;
+        const apiSecret = credentials?.apiKeySecret || process.env.CONVERT_API_KEY_SECRET;
 
         if (!accountId || !projectId) {
-            console.error("CRITICAL: CONVERT_ACCOUNT_ID or CONVERT_PROJECT_ID is missing from .env. Cannot construct Convert API URL for v1/track.");
+            console.error("CRITICAL: Convert accountId or projectId is missing. Cannot construct Convert API URL for v1/track.");
             return null;
         }
 
         if (!apiSecret) {
-            console.error("CRITICAL: CONVERT_API_KEY_SECRET is not set in .env. Cannot authenticate with the Metrics API (v1/track).");
+            console.error("CRITICAL: Convert apiKeySecret is missing. Cannot authenticate with the Metrics API (v1/track).");
             return null;
         }
 
@@ -123,12 +124,12 @@ export class ConvertApiService {
         goalId: number;
         revenue: number;
         productsCount: number;
-    }): Promise<any | null> {
-        const accountId = process.env.CONVERT_ACCOUNT_ID;
-        const projectId = process.env.CONVERT_PROJECT_ID;
+    }, credentials?: ConvertCredentials): Promise<any | null> {
+        const accountId = credentials?.accountId || process.env.CONVERT_ACCOUNT_ID;
+        const projectId = credentials?.projectId || process.env.CONVERT_PROJECT_ID;
 
         if (!accountId || !projectId) {
-            console.error("CRITICAL: CONVERT_ACCOUNT_ID or CONVERT_PROJECT_ID is missing. Cannot send transaction tracking.");
+            console.error("CRITICAL: Convert accountId or projectId is missing. Cannot send transaction tracking.");
             return null;
         }
 

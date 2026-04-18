@@ -41,20 +41,52 @@ try {
 // --- End of Firebase Initialization ---
 
 
-// --- CORS Configuration ---
-const allowedOrigins: string[] = [
-    'https://regal-honey.com',
-];
+// --- CORS Configuration (Dynamic: loads store domains from Firestore) ---
+import { getAllActiveStoreConfigs } from './services/store-config-service';
 
-if (process.env.MY_BACKEND_URL) {
-    allowedOrigins.push(process.env.MY_BACKEND_URL);
-    console.log(`[CORS] Added development origin to allowed list: ${process.env.MY_BACKEND_URL}`);
+let dynamicAllowedOrigins: string[] = [];
+
+// Load store domains for CORS on startup, refresh every 5 minutes
+async function refreshCorsOrigins() {
+    try {
+        const configs = await getAllActiveStoreConfigs();
+        const origins: string[] = [];
+        configs.forEach(config => {
+            if (config.storeDomain) {
+                origins.push(config.storeDomain);
+                // Also allow www variant
+                if (config.storeDomain.startsWith('https://') && !config.storeDomain.includes('www.')) {
+                    origins.push(config.storeDomain.replace('https://', 'https://www.'));
+                }
+            }
+        });
+        if (process.env.MY_BACKEND_URL) {
+            origins.push(process.env.MY_BACKEND_URL);
+        }
+        dynamicAllowedOrigins = origins;
+        console.log(`[CORS] Loaded ${origins.length} allowed origin(s):`, origins);
+    } catch (error) {
+        console.error('[CORS] Failed to load store domains:', error);
+    }
 }
 
+// Initial load
+refreshCorsOrigins();
+// Refresh every 5 minutes
+setInterval(refreshCorsOrigins, 5 * 60 * 1000);
+
 const corsOptions: CorsOptions = {
-    origin: allowedOrigins,
+    origin: function (origin, callback) {
+        // Allow requests with no origin (server-to-server, curl, webhooks)
+        if (!origin) return callback(null, true);
+        if (dynamicAllowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        console.warn(`[CORS] Blocked request from origin: ${origin}`);
+        return callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Admin-Secret'],
     credentials: true,
     optionsSuccessStatus: 200
 };

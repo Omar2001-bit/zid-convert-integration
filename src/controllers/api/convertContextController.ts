@@ -3,15 +3,17 @@ import { Request, Response } from 'express';
 import { ConvertApiService, Visitor, Event, BucketingEventData, ConversionEventData, Product } from '../../services/convert-service';
 import { saveContext } from '../../services/firestore-service';
 import * as admin from 'firebase-admin';
-import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry } from '../../types/index';
+import { StoredBucketingInfo as FirestoreStoredBucketingInfo, StoredConvertBucketingEntry, ConvertCredentials } from '../../types/index';
+import { getStoreConfig } from '../../services/store-config-service';
 
 interface ConvertClientContextPayload {
     zidPagePath: string;
     convertVisitorId?: string | null;
     convertBucketing?: Array<{ experienceId?: string; variationId?: string; }>;
     zidCustomerId?: string | null;
-    guestEmail?: string | null;      // NEW: For guest checkout attribution
-    guestPhone?: string | null;      // NEW: For guest checkout attribution
+    guestEmail?: string | null;
+    guestPhone?: string | null;
+    storeId?: string | null;         // Multi-tenant: identifies which store this context belongs to
 }
 
 // This local interface is for the in-memory store.
@@ -60,7 +62,7 @@ export const captureConvertContextController = async (req: Request, res: Respons
             contextData = req.body as ConvertClientContextPayload;
         }
         
-        const { zidCustomerId, convertVisitorId, convertBucketing, zidPagePath, guestEmail, guestPhone } = contextData;
+        const { zidCustomerId, convertVisitorId, convertBucketing, zidPagePath, guestEmail, guestPhone, storeId } = contextData;
 
         if (!convertVisitorId) {
             console.warn("/api/capture-convert-context: No convertVisitorId provided. Cannot store context.");
@@ -102,6 +104,7 @@ export const captureConvertContextController = async (req: Request, res: Respons
 
         const infoToStoreForFirestore: Partial<FirestoreStoredBucketingInfo> & { convertVisitorId: string } = {
             convertVisitorId: convertVisitorId,
+            storeId: storeId ?? null,
             zidCustomerId: zidCustomerId ?? null,
             ipAddress: clientIp ?? null,
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
@@ -120,7 +123,7 @@ export const captureConvertContextController = async (req: Request, res: Respons
         }
 
         await saveContext(infoToStoreForFirestore as FirestoreStoredBucketingInfo);
-        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' | zidCustomerId: '${zidCustomerId || 'N/A'}' | guestEmail: '${guestEmail || 'N/A'}' | guestPhone: '${guestPhone || 'N/A'}'`);
+        console.log(`Context saved to FIRESTORE for convertVisitorId: '${convertVisitorId}' | storeId: '${storeId || 'N/A'}' | zidCustomerId: '${zidCustomerId || 'N/A'}' | guestEmail: '${guestEmail || 'N/A'}' | guestPhone: '${guestPhone || 'N/A'}'`);
         
         res.status(200).json({ message: "Convert context received and stored successfully." });
 
@@ -136,6 +139,7 @@ interface PurchaseSignalPayload {
     experiments: Array<{ experimentId: string; variationId: string; }>;
     zidOrderId?: string | null;
     zidCustomerId?: string | null;
+    storeId?: string | null;
 }
 
 export const handlePurchaseSignalController = async (req: Request, res: Response) => {
@@ -184,24 +188,28 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
         }
 
         if (payload.convertVisitorId) {
-            const convertGoalIdString = process.env.CONVERT_GOAL_ID_FOR_PURCHASE;
+            // Look up store config for Convert credentials
+            const storeConfig = payload.storeId ? await getStoreConfig(payload.storeId) : null;
+            const convertGoalId = storeConfig?.convertGoalIdForPurchase
+                || parseInt(process.env.CONVERT_GOAL_ID_FOR_PURCHASE || '0', 10);
+            const convertCredentials: ConvertCredentials | undefined = storeConfig ? {
+                accountId: storeConfig.convertAccountId,
+                projectId: storeConfig.convertProjectId,
+                apiKeySecret: storeConfig.convertApiKeySecret
+            } : undefined;
 
-            if (!convertGoalIdString) { 
+            if (!convertGoalId) {
                 return res.status(500).json({ message: "Server configuration error for Convert tracking." });
-            }
-            const convertGoalId = parseInt(convertGoalIdString, 10);
-            if (isNaN(convertGoalId)) { 
-                return res.status(500).json({ message: "Server configuration error: Invalid Convert Goal ID." });
             }
 
             const newModernHitGoalTid = `signal-metrics-v1-${payload.convertVisitorId}-${payload.zidOrderId || 'noOrder'}-${Date.now()}`;
 
             const bucketingEvents: Event[] = payload.experiments
-                .filter(exp => exp.experimentId && exp.variationId) 
+                .filter(exp => exp.experimentId && exp.variationId)
                 .map(exp => ({
                     eventType: 'bucketing',
                     data: {
-                        experienceId: exp.experimentId!, 
+                        experienceId: exp.experimentId!,
                         variationId: exp.variationId!
                     } as BucketingEventData
                 }));
@@ -213,15 +221,15 @@ export const handlePurchaseSignalController = async (req: Request, res: Response
                     transactionId: newModernHitGoalTid,
                 } as ConversionEventData
             };
-            
+
             const visitorPayload: Visitor = {
                 visitorId: payload.convertVisitorId,
                 events: [...bucketingEvents, conversionEvent]
             };
 
             console.log("Purchase signal: Preparing NEW v1/track METRICS API payload to Convert:", JSON.stringify(visitorPayload, null, 2));
-            
-            await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload);
+
+            await ConvertApiService.sendMetricsV1ApiEvents(visitorPayload, convertCredentials);
 
             res.status(200).json({ message: "Purchase signal processed, context stored by order ID (if provided & valid experiments), Convert API events dispatched." });
         } else {

@@ -26,8 +26,7 @@ export const saveContext = async (context: StoredBucketingInfo): Promise<void> =
     await db.collection(CONVERSION_CONTEXT_COLLECTION)
             .doc(context.convertVisitorId)
             .set(contextToSave, { merge: true });
-    // Updated log to be more specific on what is being saved
-    console.log(`DEBUG: Context saved/updated in Firestore for visitor: ${context.convertVisitorId}`, contextToSave);
+    console.log(`DEBUG: Context saved/updated in Firestore for visitor: ${context.convertVisitorId} | storeId: ${context.storeId || 'N/A'}`, contextToSave);
   } catch (error) {
     console.error(`ERROR: Failed to save context for visitor ${context.convertVisitorId} to Firestore:`, error instanceof Error ? error.message : error);
     throw error;
@@ -69,25 +68,30 @@ export const getContextByConvertVisitorId = async (convertVisitorId: string): Pr
  * @param zidCustomerId The Zid customer ID.
  * @returns The most recent StoredBucketingInfo object (if multiple exist for the same customer ID) or null if not found.
  */
-export const getContextByZidCustomerId = async (zidCustomerId: string): Promise<StoredBucketingInfo | null> => {
+export const getContextByZidCustomerId = async (zidCustomerId: string, storeId?: string): Promise<StoredBucketingInfo | null> => {
   if (!zidCustomerId) {
     console.log('DEBUG: No zidCustomerId provided for Firestore lookup, returning null.');
     return null;
   }
   try {
     const db = admin.firestore();
-    const snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
-                              .where('zidCustomerId', '==', zidCustomerId)
-                              .orderBy('timestamp', 'desc')
+    let query: admin.firestore.Query = db.collection(CONVERSION_CONTEXT_COLLECTION)
+                              .where('zidCustomerId', '==', zidCustomerId);
+
+    if (storeId) {
+      query = query.where('storeId', '==', storeId);
+    }
+
+    const snapshot = await query.orderBy('timestamp', 'desc')
                               .limit(1)
                               .get();
 
     if (!snapshot.empty) {
       const data = snapshot.docs[0].data() as StoredBucketingInfo;
-      console.log(`DEBUG: Context found in Firestore by zidCustomerId: ${zidCustomerId} (associated convertVisitorId: ${data.convertVisitorId})`);
+      console.log(`DEBUG: Context found in Firestore by zidCustomerId: ${zidCustomerId} (storeId: ${storeId || 'any'}, convertVisitorId: ${data.convertVisitorId})`);
       return data;
     } else {
-      console.log(`DEBUG: Context NOT FOUND in Firestore by zidCustomerId: ${zidCustomerId}`);
+      console.log(`DEBUG: Context NOT FOUND in Firestore by zidCustomerId: ${zidCustomerId} (storeId: ${storeId || 'any'})`);
       return null;
     }
   } catch (error) {
@@ -114,7 +118,7 @@ export const getContextByZidCustomerId = async (zidCustomerId: string): Promise<
  * @param guestPhone The guest customer's phone.
  * @returns The StoredBucketingInfo object or null if not found.
  */
-export const getContextByGuestContact = async (guestEmail?: string, guestPhone?: string): Promise<StoredBucketingInfo | null> => {
+export const getContextByGuestContact = async (guestEmail?: string, guestPhone?: string, storeId?: string): Promise<StoredBucketingInfo | null> => {
   if (!guestEmail && !guestPhone) {
     console.log('DEBUG: No guest email or phone provided for lookup, returning null.');
     return null;
@@ -124,10 +128,13 @@ export const getContextByGuestContact = async (guestEmail?: string, guestPhone?:
 
     // Try email first (more reliable)
     if (guestEmail) {
-      console.log(`DEBUG: Looking up guest context by email: ${guestEmail}`);
-      let snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
-                              .where('guestEmail', '==', guestEmail)
-                              .orderBy('timestamp', 'desc')
+      console.log(`DEBUG: Looking up guest context by email: ${guestEmail} (storeId: ${storeId || 'any'})`);
+      let query: admin.firestore.Query = db.collection(CONVERSION_CONTEXT_COLLECTION)
+                              .where('guestEmail', '==', guestEmail);
+      if (storeId) {
+        query = query.where('storeId', '==', storeId);
+      }
+      let snapshot = await query.orderBy('timestamp', 'desc')
                               .limit(1)
                               .get();
 
@@ -140,10 +147,13 @@ export const getContextByGuestContact = async (guestEmail?: string, guestPhone?:
 
     // Try phone as fallback
     if (guestPhone) {
-      console.log(`DEBUG: Looking up guest context by phone: ${guestPhone}`);
-      let snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
-                              .where('guestPhone', '==', guestPhone)
-                              .orderBy('timestamp', 'desc')
+      console.log(`DEBUG: Looking up guest context by phone: ${guestPhone} (storeId: ${storeId || 'any'})`);
+      let query: admin.firestore.Query = db.collection(CONVERSION_CONTEXT_COLLECTION)
+                              .where('guestPhone', '==', guestPhone);
+      if (storeId) {
+        query = query.where('storeId', '==', storeId);
+      }
+      let snapshot = await query.orderBy('timestamp', 'desc')
                               .limit(1)
                               .get();
 
@@ -154,7 +164,7 @@ export const getContextByGuestContact = async (guestEmail?: string, guestPhone?:
       }
     }
 
-    console.log(`DEBUG: No guest context found by email ${guestEmail || 'N/A'} or phone ${guestPhone || 'N/A'}`);
+    console.log(`DEBUG: No guest context found by email ${guestEmail || 'N/A'} or phone ${guestPhone || 'N/A'} (storeId: ${storeId || 'any'})`);
     return null;
   } catch (error) {
     console.error(`ERROR: Failed to retrieve guest context from Firestore:`, error instanceof Error ? error.message : error);
@@ -278,17 +288,22 @@ export const getHeuristicGuestContext = async (ipAddress: string, purchaseTimest
  * @param maxAgeMinutes Maximum age of context in minutes (default 30).
  * @returns The StoredBucketingInfo object or null if not found.
  */
-export const getNewestGuestContext = async (maxAgeMinutes: number = 30): Promise<StoredBucketingInfo | null> => {
+export const getNewestGuestContext = async (maxAgeMinutes: number = 30, storeId?: string): Promise<StoredBucketingInfo | null> => {
   try {
     const db = admin.firestore();
     const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
 
-    console.log(`DEBUG: Looking up newest unconsumed guest context (max age: ${maxAgeMinutes}min, cutoff: ${cutoff.toISOString()})`);
+    console.log(`DEBUG: Looking up newest unconsumed guest context (max age: ${maxAgeMinutes}min, storeId: ${storeId || 'any'}, cutoff: ${cutoff.toISOString()})`);
 
-    const snapshot = await db.collection(CONVERSION_CONTEXT_COLLECTION)
+    let query: admin.firestore.Query = db.collection(CONVERSION_CONTEXT_COLLECTION)
                               .where('zidCustomerId', '==', null)
-                              .where('consumed', '==', false)
-                              .where('timestamp', '>=', cutoff)
+                              .where('consumed', '==', false);
+
+    if (storeId) {
+      query = query.where('storeId', '==', storeId);
+    }
+
+    const snapshot = await query.where('timestamp', '>=', cutoff)
                               .orderBy('timestamp', 'desc')
                               .limit(1)
                               .get();
