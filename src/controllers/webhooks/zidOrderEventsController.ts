@@ -37,7 +37,11 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         return res.status(400).send("Bad Request: Invalid JSON.");
     }
 
-    const storeId = zidOrder?.store_id?.toString() || null;
+    // Zid webhooks wrap the order inside a "payload" key
+    const webhookBody = zidOrder;
+    const storeId = webhookBody?.store_id?.toString() || null;
+    zidOrder = webhookBody?.payload || webhookBody; // Extract the actual order from payload, or use the body directly
+
     const providedToken = req.query.token as string;
 
     // Look up store config — fall back to env vars if no store config found
@@ -57,9 +61,10 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         console.log("================================================================");
         console.log(`Received at: ${new Date().toISOString()}`);
         console.log(`Store ID: ${storeId || 'N/A'} | Config: ${storeConfig ? storeConfig.storeName : 'ENV FALLBACK'}`);
+        console.log(`Event: ${webhookBody?.event || 'N/A'}`);
         console.log("--- HEADERS ---");
         console.log(JSON.stringify(req.headers, null, 2));
-        console.log("--- PARSED BODY (as JSON) ---");
+        console.log("--- ORDER DATA ---");
         console.log(JSON.stringify(zidOrder, null, 2));
         console.log("================================================================");
 
