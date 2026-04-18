@@ -38,6 +38,8 @@ export interface StoreConfig {
   convertProjectId: string;
   convertApiKeySecret: string;
   convertGoalIdForPurchase: number;
+  // Reporting currency (e.g. "SAR", "USD") — revenue is converted to this before sending to Convert
+  reportingCurrency?: string;
   // Webhook security
   zidWebhookSecretToken: string;
   // Frontend checkout config

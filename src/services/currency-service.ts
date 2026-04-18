@@ -37,7 +37,7 @@ export class CurrencyService {
    * @returns A Promise that resolves to the converted amount in SAR, rounded to 2 decimal places.
    *          Returns the original amount on failure.
    */
-  public static async convertToSAR(amount: number, originalCurrency: string): Promise<number> {
+  public static async convertTo(amount: number, originalCurrency: string, targetCurrency: string = TARGET_CURRENCY): Promise<number> {
     // --- Initial Checks ---
     if (!API_KEY) {
       console.error('CRITICAL: EXCHANGERATE_API_KEY is not set in the .env file. Cannot perform currency conversion.');
@@ -45,14 +45,15 @@ export class CurrencyService {
     }
     
     const upperOriginalCurrency = originalCurrency.toUpperCase();
-    if (upperOriginalCurrency === TARGET_CURRENCY || amount === 0) {
+    const upperTargetCurrency = targetCurrency.toUpperCase();
+    if (upperOriginalCurrency === upperTargetCurrency || amount === 0) {
       return parseFloat(amount.toFixed(2));
     }
 
     // --- Cache Check ---
-    const cachedEntry = exchangeRateCache[upperOriginalCurrency];
+    const cachedEntry = exchangeRateCache[`${upperOriginalCurrency}_${upperTargetCurrency}`];
     if (cachedEntry && (Date.now() - cachedEntry.timestamp < CACHE_VALIDITY_DURATION_MS)) {
-      console.log(`CurrencyService: Using cached rate for ${upperOriginalCurrency} -> ${TARGET_CURRENCY}. Rate: ${cachedEntry.rate}`);
+      console.log(`CurrencyService: Using cached rate for ${upperOriginalCurrency} -> ${upperTargetCurrency}. Rate: ${cachedEntry.rate}`);
       const convertedAmount = amount * cachedEntry.rate;
       return parseFloat(convertedAmount.toFixed(2));
     }
@@ -60,15 +61,15 @@ export class CurrencyService {
     // --- API Call ---
     console.log(`CurrencyService: Cache miss or stale for ${upperOriginalCurrency}. Fetching new rate from API.`);
     try {
-      const apiUrl = `${API_BASE_URL}/${API_KEY}/pair/${upperOriginalCurrency}/${TARGET_CURRENCY}`;
+      const apiUrl = `${API_BASE_URL}/${API_KEY}/pair/${upperOriginalCurrency}/${upperTargetCurrency}`;
       const response = await axios.get<ExchangeRateApiResponse>(apiUrl);
 
       if (response.data && response.data.result === 'success') {
         const rate = response.data.conversion_rate;
-        console.log(`CurrencyService: Fetched rate: 1 ${upperOriginalCurrency} = ${rate} ${TARGET_CURRENCY}`);
+        console.log(`CurrencyService: Fetched rate: 1 ${upperOriginalCurrency} = ${rate} ${upperTargetCurrency}`);
 
         // Store the new rate in the cache
-        exchangeRateCache[upperOriginalCurrency] = { rate, timestamp: Date.now() };
+        exchangeRateCache[`${upperOriginalCurrency}_${upperTargetCurrency}`] = { rate, timestamp: Date.now() };
 
         const convertedAmount = amount * rate;
         return parseFloat(convertedAmount.toFixed(2));

@@ -15,7 +15,7 @@ import * as admin from 'firebase-admin'; // Added: Import admin to handle Firest
 
 // Removed: interface BucketingEntry as it's replaced by NormalizedBucketingInfo's structure for bucketing items
 
-const TARGET_REPORTING_CURRENCY = 'SAR';
+const DEFAULT_REPORTING_CURRENCY = 'SAR';
 
 export const zidAuthCallbackController = async (req: Request, res: Response) => {
     const code = req.query.code as string;
@@ -128,6 +128,8 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                     projectId: storeConfigForOrders.convertProjectId,
                     apiKeySecret: storeConfigForOrders.convertApiKeySecret
                 } : undefined;
+
+                const reportingCurrency = storeConfigForOrders?.reportingCurrency || DEFAULT_REPORTING_CURRENCY;
 
                 if (!convertGoalId) {
                     console.error("ZidAuthCallback: Convert Goal ID not configured (neither in store config nor .env).");
@@ -266,13 +268,13 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                             // Removed hitGoalPayload creation and call to ConvertApiService.sendEventToConvert
                             
                             const originalOrderTotal = parseFloat(zidOrder.order_total || "0");
-                            const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY; 
+                            const originalCurrencyCode = zidOrder.currency_code || reportingCurrency;
                             let revenueForConvertAPI = 0;
 
                             if (originalOrderTotal > 0) {
                                 try {
-                                    revenueForConvertAPI = await CurrencyService.convertToSAR(originalOrderTotal, originalCurrencyCode);
-                                    console.log(`${orderLogPrefix} Converted ${originalOrderTotal} ${originalCurrencyCode} to ${revenueForConvertAPI} ${TARGET_REPORTING_CURRENCY}.`);
+                                    revenueForConvertAPI = await CurrencyService.convertTo(originalOrderTotal, originalCurrencyCode, reportingCurrency);
+                                    console.log(`${orderLogPrefix} Converted ${originalOrderTotal} ${originalCurrencyCode} to ${revenueForConvertAPI} ${reportingCurrency}.`);
                                 } catch (conversionError) {
                                     console.error(`${orderLogPrefix} Currency conversion error. Using original amount. Error:`, conversionError as Error);
                                     revenueForConvertAPI = parseFloat(originalOrderTotal.toFixed(2));
@@ -290,7 +292,7 @@ export const zidAuthCallbackController = async (req: Request, res: Response) => 
                                     productsForNewPayload = await Promise.all(
                                         zidOrder.products.map(async (product: ZidProduct) => { // Explicitly type 'product'
                                             const itemPrice = parseFloat(String(product.price)) || 0;
-                                            const convertedItemPrice = await CurrencyService.convertToSAR(itemPrice, originalCurrencyCode);
+                                            const convertedItemPrice = await CurrencyService.convertTo(itemPrice, originalCurrencyCode, reportingCurrency);
                                             return {
                                                 productId: product.sku || String(product.id),
                                                 productName: product.name,

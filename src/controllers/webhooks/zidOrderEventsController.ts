@@ -7,7 +7,7 @@ import { getStoreConfig } from '../../services/store-config-service';
 import { StoredBucketingInfo as FirestoreStoredBucketingInfo, NormalizedBucketingInfo, ZidProduct, ConvertCredentials } from '../../types/index';
 import * as admin from 'firebase-admin';
 
-const TARGET_REPORTING_CURRENCY = 'SAR';
+const DEFAULT_REPORTING_CURRENCY = 'SAR';
 
 function normalizeContext(firestoreData: FirestoreStoredBucketingInfo): NormalizedBucketingInfo {
     return {
@@ -82,7 +82,9 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
             apiKeySecret: storeConfig.convertApiKeySecret
         } : undefined;
 
-        console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}) ---`);
+        const reportingCurrency = storeConfig?.reportingCurrency || DEFAULT_REPORTING_CURRENCY;
+
+        console.log(`--- ${orderLogPrefix} [WEBHOOK] Processing for Convert (Goal ID: ${convertGoalId}, Currency: ${reportingCurrency}) ---`);
 
         // ========================================================================
         // CONTEXT LOOKUP: Two-path attribution
@@ -170,15 +172,15 @@ export const zidOrderEventsWebhookController = async (req: Request, res: Respons
         }
 
         const finalOrderTotal = parseFloat(zidOrder.order_total || "0");
-        const originalCurrencyCode = zidOrder.currency_code || TARGET_REPORTING_CURRENCY;
-        const revenueForConvertAPI = await CurrencyService.convertToSAR(finalOrderTotal, originalCurrencyCode);
+        const originalCurrencyCode = zidOrder.currency_code || reportingCurrency;
+        const revenueForConvertAPI = await CurrencyService.convertTo(finalOrderTotal, originalCurrencyCode, reportingCurrency);
 
         let productsForPayload: ConvertProductType[] = [];
         if (zidOrder.products && Array.isArray(zidOrder.products)) {
             productsForPayload = await Promise.all(
                 zidOrder.products.map(async (product: ZidProduct) => {
                     const itemPrice = parseFloat(String(product.price)) || 0;
-                    const convertedItemPrice = await CurrencyService.convertToSAR(itemPrice, originalCurrencyCode);
+                    const convertedItemPrice = await CurrencyService.convertTo(itemPrice, originalCurrencyCode, reportingCurrency);
                     return {
                         productId: product.sku || String(product.id),
                         productName: product.name,

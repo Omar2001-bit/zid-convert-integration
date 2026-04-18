@@ -76,6 +76,7 @@ router.post('/admin/store-config', async (req, res) => {
             convertProjectId: body.convertProjectId,
             convertApiKeySecret: body.convertApiKeySecret,
             convertGoalIdForPurchase: parseInt(body.convertGoalIdForPurchase, 10),
+            reportingCurrency: body.reportingCurrency || 'SAR',
             zidWebhookSecretToken: body.zidWebhookSecretToken || `token_${Math.random().toString(36).substring(2, 15)}`,
             checkoutConfig: body.checkoutConfig || {
                 emailSelectors: ['#inputEmail', 'input[name="email"]', 'input[type="email"]'],
