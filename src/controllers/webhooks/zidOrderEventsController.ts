@@ -13,7 +13,7 @@ function normalizeContext(firestoreData: FirestoreStoredBucketingInfo): Normaliz
     return {
         convertVisitorId: firestoreData.convertVisitorId,
         zidCustomerId: firestoreData.zidCustomerId ?? undefined,
-        convertBucketing: firestoreData.convertBucketing.map(b => ({
+        convertBucketing: (firestoreData.convertBucketing || []).map(b => ({
             experimentId: String(b.experienceId),
             variationId: String(b.variationId)
         })),
