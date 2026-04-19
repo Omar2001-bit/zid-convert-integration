@@ -376,6 +376,13 @@
         });
         console.log(SCRIPT_NAMESPACE + ': Event listener for Convert registered.');
 
+        // Check if Convert already evaluated experiments before our script loaded
+        if (window.convert && window.convert.currentData && window.convert.currentData.experiences
+            && Object.keys(window.convert.currentData.experiences).length > 0) {
+            console.log(SCRIPT_NAMESPACE + ': [DEBUG] Convert experiments already available. Sending context immediately.');
+            handleExperiencesEvaluated();
+        }
+
         setInterval(checkForLogin, 3000);
 
         if (isCheckoutPage()) {
